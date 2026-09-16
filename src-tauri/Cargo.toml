@@ -1,0 +1,43 @@
+[package]
+name = "ternion"
+version = "0.1.0"
+description = "One interface. Three models. The right model for every message."
+edition = "2024"
+
+[lib]
+name = "ternion_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6" }
+
+[dependencies]
+tauri = { version = "2.11", features = ["tray-icon", "image-png"] }
+tauri-plugin-log = "2.9"
+tauri-plugin-opener = "2.5"
+tauri-plugin-single-instance = "2.4"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "fs"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+futures = "0.3"
+
+reqwest = { version = "0.13", features = ["json", "stream"] }
+url = "2"
+
+rusqlite = { version = "0.40", features = ["bundled"] }
+
+uuid = { version = "1", features = ["v7"] }
+thiserror = "2"
+log = "0.4"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
