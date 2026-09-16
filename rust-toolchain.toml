@@ -1,0 +1,4 @@
+# Pin the toolchain channel (stable-msvc). Component/minimum-version knobs
+# left to rustup defaults; MSVC Build Tools provide the linker.
+[toolchain]
+channel = "stable"
