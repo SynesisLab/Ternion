@@ -4,3 +4,4 @@
 //! policy engine and parser are unit-testable without a running model.
 
 pub mod config;
+pub mod policy;

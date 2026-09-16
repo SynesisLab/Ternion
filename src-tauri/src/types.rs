@@ -22,7 +22,7 @@ pub enum Target {
 }
 
 /// Deterministic flags from the router (design §3.3).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RoutingFlags {
     pub vision: bool,
     pub tools: bool,
