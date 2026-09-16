@@ -14,11 +14,18 @@ use rusqlite::{params, Connection, Row};
 
 use crate::{
     error::CmdError,
-    types::{ChatRole, ContentPart, Conversation, Message, MessageStatus, ModelRole},
+    types::{
+        ChatRole, ContentPart, Conversation, Message, MessageStatus, ModelRole, RoutingDecision,
+        RoutingEvent, Target,
+    },
+    ids,
 };
 
 type DbResult<T> = Result<T, rusqlite::Error>;
 
+/// Cloneable: the inner connection sits behind an `Arc` — sidecar tasks
+/// (Herald titles, digests, suggestions) own their own handle.
+#[derive(Clone)]
 pub struct Database {
     conn: Arc<Mutex<Connection>>,
 }
@@ -270,6 +277,156 @@ impl Database {
         })
         .await
     }
+
+    // -- routing events (M1, design §3.11) ---------------------------------
+
+    /// Persist one router decision; returns the generated event id.
+    pub async fn insert_routing_event(
+        &self,
+        id: String,
+        conversation_id: String,
+        message_id: String,
+        decision: RoutingDecision,
+        final_target: Target,
+        actual_model: String,
+        latency_ms: u64,
+        override_kind: Option<String>,
+    ) -> Result<(), CmdError> {
+        let decision = serde_json::to_string(&decision)
+            .map_err(|e| CmdError::internal(e.to_string()))?;
+        self.run(move |c| {
+            c.execute(
+                "INSERT INTO routing_events
+                    (id, ts, conversation_id, message_id, decision, final_target,
+                     actual_model, latency_ms, override_kind)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    id,
+                    ids::now_ms(),
+                    conversation_id,
+                    message_id,
+                    decision,
+                    final_target.as_str(),
+                    actual_model,
+                    latency_ms.min(i64::MAX as u64) as i64,
+                    override_kind,
+                ],
+            )
+            .map(|_| ())
+        })
+        .await
+    }
+
+    /// Latest routing events for a conversation, newest first (router log).
+    pub async fn list_routing_events(
+        &self,
+        conversation_id: String,
+        limit: i64,
+    ) -> Result<Vec<RoutingEvent>, CmdError> {
+        self.run(move |c| {
+            let mut stmt = c.prepare(
+                "SELECT id, ts, conversation_id, message_id, decision, final_target,
+                        actual_model, latency_ms, override_kind
+                 FROM routing_events WHERE conversation_id = ?1
+                 ORDER BY ts DESC, rowid DESC LIMIT ?2",
+            )?;
+            let rows = stmt.query_map(params![conversation_id, limit], |r| {
+                let decision: String = r.get("decision")?;
+                Ok(RoutingEvent {
+                    id: r.get("id")?,
+                    ts: r.get("ts")?,
+                    conversation_id: r.get("conversation_id")?,
+                    message_id: r.get("message_id")?,
+                    decision: serde_json::from_str(&decision).unwrap_or_else(|e| {
+                        log::debug!("unparseable routing decision ({e})");
+                        RoutingDecision::default()
+                    }),
+                    final_target: parse_target(r.get::<_, Option<String>>("final_target")?),
+                    actual_model: r.get("actual_model")?,
+                    latency_ms: r
+                        .get::<_, Option<i64>>("latency_ms")?
+                        .unwrap_or_default()
+                        .max(0) as u64,
+                    override_kind: r.get("override_kind")?,
+                })
+            })?;
+            rows.collect()
+        })
+        .await
+    }
+
+    /// Attach routing outcomes to the assistant placeholder row.
+    pub async fn set_message_routing(
+        &self,
+        message_id: String,
+        model_role: Option<ModelRole>,
+        model_id: String,
+        endpoint_id: String,
+        routing_event_id: Option<String>,
+    ) -> Result<(), CmdError> {
+        self.run(move |c| {
+            c.execute(
+                "UPDATE messages
+                 SET model_role = ?2, model_id = ?3, endpoint_id = ?4, routing_event_id = ?5
+                 WHERE id = ?1",
+                params![
+                    message_id,
+                    model_role.map(|r| r.as_str()),
+                    model_id,
+                    endpoint_id,
+                    routing_event_id,
+                ],
+            )
+            .map(|_| ())
+        })
+        .await
+    }
+
+    // -- rolling digest (M1, design §3.6) -----------------------------------
+
+    pub async fn set_conversation_digest(
+        &self,
+        id: String,
+        digest: String,
+    ) -> Result<(), CmdError> {
+        self.run(move |c| {
+            c.execute(
+                "UPDATE conversations SET digest = ?2 WHERE id = ?1",
+                params![id, digest],
+            )
+            .map(|_| ())
+        })
+        .await
+    }
+
+    pub async fn get_conversation_digest(&self, id: String) -> Result<Option<String>, CmdError> {
+        self.run(move |c| {
+            c.query_row(
+                "SELECT digest FROM conversations WHERE id = ?1",
+                params![id],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other),
+            })
+        })
+        .await
+        .map(|opt| opt.flatten())
+    }
+
+    /// Herald sidecar re-title (overwrites the truncation fallback).
+    pub async fn retitle_conversation(&self, id: String, title: String) -> Result<(), CmdError> {
+        self.run(move |c| {
+            c.execute(
+                "UPDATE conversations SET title = ?2 WHERE id = ?1",
+                params![id, title],
+            )
+            .map(|_| ())
+        })
+        .await
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -309,6 +466,13 @@ fn parse_model_role(s: Option<String>) -> Option<ModelRole> {
         Some("scout") => Some(ModelRole::Scout),
         Some("titan") => Some(ModelRole::Titan),
         _ => None,
+    }
+}
+
+fn parse_target(s: Option<String>) -> Target {
+    match s.as_deref() {
+        Some("titan") => Target::Titan,
+        _ => Target::Scout,
     }
 }
 

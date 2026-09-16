@@ -4,7 +4,10 @@
 
 use std::collections::HashMap;
 
-use crate::{settings::SettingsCache, types::Target};
+use crate::{
+    settings::{keys, SettingsCache},
+    types::Target,
+};
 
 /// Model ids assigned to each role. Empty string in settings = unassigned.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -117,48 +120,48 @@ impl TriadConfig {
         let mut cfg = Self::default();
         let get = |key: &str| pairs.get(key).map(String::as_str);
 
-        if let Some(v) = get("triad.enabled") {
+        if let Some(v) = get(keys::TRIAD_ENABLED) {
             cfg.enabled = v != "false";
         }
-        if let Some(v) = get("triad.skip_router") {
+        if let Some(v) = get(keys::TRIAD_SKIP_ROUTER) {
             cfg.skip_router = v == "true";
         }
         cfg.roles = RoleAssignments {
-            herald: non_empty(get("triad.role.herald")),
-            scout: non_empty(get("triad.role.scout")),
-            titan: non_empty(get("triad.role.titan")),
+            herald: non_empty(get(keys::TRIAD_ROLE_HERALD)),
+            scout: non_empty(get(keys::TRIAD_ROLE_SCOUT)),
+            titan: non_empty(get(keys::TRIAD_ROLE_TITAN)),
         };
-        if let Some(v) = get("triad.min_confidence").and_then(parse_f32) {
+        if let Some(v) = get(keys::TRIAD_MIN_CONFIDENCE).and_then(parse_f32) {
             cfg.min_confidence = v;
         }
-        if let Some(v) = get("triad.deescalation_confidence").and_then(parse_f32) {
+        if let Some(v) = get(keys::TRIAD_DEESCALATION_CONFIDENCE).and_then(parse_f32) {
             cfg.deescalation_confidence = v;
         }
-        if let Some(v) = get("triad.sticky_turns").and_then(parse_u32) {
+        if let Some(v) = get(keys::TRIAD_STICKY_TURNS).and_then(parse_u32) {
             cfg.sticky_turns = v;
         }
-        if let Some(v) = get("triad.scout_output_ceiling").and_then(parse_u32) {
+        if let Some(v) = get(keys::TRIAD_SCOUT_OUTPUT_CEILING).and_then(parse_u32) {
             cfg.scout_output_ceiling = v;
         }
-        if let Some(v) = get("triad.handoff_recent_messages").and_then(parse_u32) {
+        if let Some(v) = get(keys::TRIAD_HANDOFF_RECENT_MESSAGES).and_then(parse_u32) {
             cfg.handoff_recent_messages = v;
         }
-        if let Some(v) = get("triad.sidecar_titles") {
+        if let Some(v) = get(keys::TRIAD_SIDECAR_TITLES) {
             cfg.sidecar_titles = v != "false";
         }
-        if let Some(v) = get("triad.sidecar_suggestions") {
+        if let Some(v) = get(keys::TRIAD_SIDECAR_SUGGESTIONS) {
             cfg.sidecar_suggestions = v != "false";
         }
-        if let Some(v) = get("triad.herald_timeout_ms").and_then(parse_u32) {
+        if let Some(v) = get(keys::TRIAD_HERALD_TIMEOUT_MS).and_then(parse_u32) {
             cfg.herald_timeout_ms = u64::from(v);
         }
-        if let Some(v) = non_empty(get("herald.keep_alive")) {
+        if let Some(v) = non_empty(get(keys::HERALD_KEEP_ALIVE)) {
             cfg.herald_keep_alive = v;
         }
-        if let Some(v) = non_empty(get("triad.scout_keep_alive")) {
+        if let Some(v) = non_empty(get(keys::TRIAD_SCOUT_KEEP_ALIVE)) {
             cfg.scout_keep_alive = v;
         }
-        if let Some(v) = non_empty(get("triad.titan_keep_alive")) {
+        if let Some(v) = non_empty(get(keys::TRIAD_TITAN_KEEP_ALIVE)) {
             cfg.titan_keep_alive = v;
         }
         cfg
@@ -169,22 +172,22 @@ fn snapshot(settings: &SettingsCache) -> HashMap<String, String> {
     // Only the keys the router reads — cheap, and keeps tests honest about
     // which settings actually matter.
     const KEYS: &[&str] = &[
-        "triad.enabled",
-        "triad.skip_router",
-        "triad.role.herald",
-        "triad.role.scout",
-        "triad.role.titan",
-        "triad.min_confidence",
-        "triad.deescalation_confidence",
-        "triad.sticky_turns",
-        "triad.scout_output_ceiling",
-        "triad.handoff_recent_messages",
-        "triad.sidecar_titles",
-        "triad.sidecar_suggestions",
-        "triad.herald_timeout_ms",
-        "herald.keep_alive",
-        "triad.scout_keep_alive",
-        "triad.titan_keep_alive",
+        keys::TRIAD_ENABLED,
+        keys::TRIAD_SKIP_ROUTER,
+        keys::TRIAD_ROLE_HERALD,
+        keys::TRIAD_ROLE_SCOUT,
+        keys::TRIAD_ROLE_TITAN,
+        keys::TRIAD_MIN_CONFIDENCE,
+        keys::TRIAD_DEESCALATION_CONFIDENCE,
+        keys::TRIAD_STICKY_TURNS,
+        keys::TRIAD_SCOUT_OUTPUT_CEILING,
+        keys::TRIAD_HANDOFF_RECENT_MESSAGES,
+        keys::TRIAD_SIDECAR_TITLES,
+        keys::TRIAD_SIDECAR_SUGGESTIONS,
+        keys::TRIAD_HERALD_TIMEOUT_MS,
+        keys::HERALD_KEEP_ALIVE,
+        keys::TRIAD_SCOUT_KEEP_ALIVE,
+        keys::TRIAD_TITAN_KEEP_ALIVE,
     ];
     KEYS
         .iter()

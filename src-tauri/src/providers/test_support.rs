@@ -4,7 +4,8 @@
 
 #![cfg(test)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
 
@@ -15,38 +16,52 @@ use crate::{
 };
 
 pub struct FakeProvider {
-    pub events: Vec<StreamEvent>,
+    /// Per-call scripts: the i-th `chat` call replays entry i; the last entry
+    /// repeats for any extra calls. A single-entry vec behaves like `scripted`.
+    scripts: Arc<Mutex<VecDeque<Vec<StreamEvent>>>>,
     /// Index of the event after which the provider parks on `cancelled()`.
-    pub wait_cancel_at: Option<usize>,
+    wait_cancel_at: Option<usize>,
     /// Park before sending anything at all (timeout tests).
-    pub park: bool,
+    park: bool,
+    /// Requests received by `chat`, for asserting what was sent upstream.
+    pub received: Arc<Mutex<Vec<ChatRequest>>>,
 }
 
 impl FakeProvider {
     pub fn scripted(events: Vec<StreamEvent>) -> Self {
+        Self::scripted_sequence(vec![events])
+    }
+
+    /// Each `chat` call replays the next script; the last one repeats.
+    pub fn scripted_sequence(scripts: Vec<Vec<StreamEvent>>) -> Self {
         Self {
-            events,
+            scripts: Arc::new(Mutex::new(scripts.into())),
             wait_cancel_at: None,
             park: false,
+            received: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
     /// Parks after the first event — tests flip the token to exercise Stop.
     pub fn cancelling_after(events: Vec<StreamEvent>) -> Self {
-        Self {
-            events,
-            wait_cancel_at: Some(1),
-            park: false,
-        }
+        let mut p = Self::scripted(events);
+        p.wait_cancel_at = Some(1);
+        p
     }
 
     /// Never sends anything and never completes — for timeout tests.
     pub fn parking() -> Self {
         Self {
-            events: vec![],
+            scripts: Arc::new(Mutex::new(VecDeque::new())),
             wait_cancel_at: None,
             park: true,
+            received: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    /// All requests seen so far (classify calls included).
+    pub fn requests(&self) -> Vec<ChatRequest> {
+        self.received.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
 }
 
@@ -65,11 +80,22 @@ impl Provider for FakeProvider {
 
     fn chat(
         &self,
-        _req: ChatRequest,
+        req: ChatRequest,
         tx: mpsc::Sender<StreamEvent>,
         cancel: tokio_util::sync::CancellationToken,
     ) -> futures::future::BoxFuture<'_, ()> {
-        let events = self.events.clone();
+        let events = {
+            let mut scripts = self.scripts.lock().unwrap_or_else(|p| p.into_inner());
+            if scripts.len() > 1 {
+                scripts.pop_front().unwrap_or_default()
+            } else {
+                scripts.front().cloned().unwrap_or_default()
+            }
+        };
+        self.received
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(req);
         let wait_cancel_at = self.wait_cancel_at;
         let park = self.park;
         Box::pin(async move {
@@ -90,21 +116,33 @@ impl Provider for FakeProvider {
     }
 }
 
-/// An AppState over one FakeProvider + a temp DB. Returns the TempDir to keep
-/// it alive for the duration of the test.
+/// An AppState over one FakeProvider + a temp DB, with default chat settings.
+/// Returns the TempDir to keep it alive for the duration of the test.
 pub fn app_with(provider: FakeProvider) -> (tempfile::TempDir, AppState) {
+    app_with_settings(provider, &[])
+}
+
+/// Same, with extra settings merged in (triad.* tests).
+pub fn app_with_settings(
+    provider: FakeProvider,
+    extra: &[(&str, &str)],
+) -> (tempfile::TempDir, AppState) {
     let dir = tempfile::tempdir().unwrap();
     let db = crate::db::Database::open(&dir.path().join("t.db")).unwrap();
     let providers: HashMap<String, std::sync::Arc<dyn Provider>> = HashMap::from([(
         "ep_local_ollama".to_string(),
         std::sync::Arc::new(provider) as std::sync::Arc<dyn Provider>,
     )]);
-    let settings = crate::settings::SettingsCache::new(HashMap::from([
+    let mut pairs = HashMap::from([
         ("ollama.base_url".to_string(), "http://127.0.0.1:11434".to_string()),
         ("chat.temperature".to_string(), "0.7".to_string()),
         ("chat.context_tokens".to_string(), "8192".to_string()),
         ("chat.keep_alive".to_string(), "10m".to_string()),
-    ]));
+    ]);
+    for (k, v) in extra {
+        pairs.insert(k.to_string(), v.to_string());
+    }
+    let settings = crate::settings::SettingsCache::new(pairs);
     let state = AppState::new(db, settings, reqwest::Client::new(), providers);
     (dir, state)
 }

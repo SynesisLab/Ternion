@@ -107,6 +107,14 @@ pub enum HeraldError {
     Parse(String),
     #[error("herald call cancelled")]
     Cancelled,
+    #[error("herald task failed: {0}")]
+    Task(String),
+}
+
+impl From<crate::error::CmdError> for HeraldError {
+    fn from(e: crate::error::CmdError) -> Self {
+        HeraldError::Task(e.to_string())
+    }
 }
 
 /// Run one classification. Returns the decision (with `source` set) and the

@@ -14,5 +14,8 @@ use crate::{
 #[tauri::command]
 pub async fn list_models(state: State<'_, AppState>) -> Result<Vec<ModelInfo>, CmdError> {
     let provider: Arc<dyn Provider> = state.provider_for(DEFAULT_ENDPOINT)?;
-    provider.list_models().await.map_err(CmdError::from)
+    let models = provider.list_models().await.map_err(CmdError::from)?;
+    // Cache capability facts for the policy engine's hard rules (§5.4).
+    state.update_model_registry(models.clone());
+    Ok(models)
 }

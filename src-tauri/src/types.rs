@@ -21,8 +21,28 @@ pub enum Target {
     Titan,
 }
 
+impl Target {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Target::Scout => "scout",
+            Target::Titan => "titan",
+        }
+    }
+}
+
+impl ModelRole {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ModelRole::Herald => "herald",
+            ModelRole::Scout => "scout",
+            ModelRole::Titan => "titan",
+        }
+    }
+}
+
 /// Deterministic flags from the router (design §3.3).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RoutingFlags {
     pub vision: bool,
     pub tools: bool,
@@ -43,6 +63,7 @@ pub enum DecisionSource {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RoutingDecision {
     pub target: Target,
     pub confidence: f32,
@@ -53,6 +74,22 @@ pub struct RoutingDecision {
     pub est_out_tokens: u32,
     pub handoff_note: String,
     pub source: DecisionSource,
+}
+
+impl Default for RoutingDecision {
+    fn default() -> Self {
+        Self {
+            target: Target::Scout,
+            confidence: 0.0,
+            complexity: 1,
+            reason: String::new(),
+            flags: RoutingFlags::default(),
+            est_in_tokens: 0,
+            est_out_tokens: 0,
+            handoff_note: String::new(),
+            source: DecisionSource::Heuristic,
+        }
+    }
 }
 
 /// One part of a message body. `content` in the DB is a JSON array of these
@@ -239,6 +276,25 @@ pub struct ChatSendResult {
     pub tokens_in: u64,
     pub tokens_out: u64,
     pub latency_ms: u64,
+    /// M1: the answer ran on Scout past `scout_output_ceiling` — the UI
+    /// offers "⚡ Continue with Titan".
+    pub escalation_available: bool,
+}
+
+/// One persisted router decision (router log drawer, design §9.2).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoutingEvent {
+    pub id: String,
+    pub ts: i64,
+    pub conversation_id: String,
+    pub message_id: String,
+    pub decision: RoutingDecision,
+    pub final_target: Target,
+    pub actual_model: String,
+    pub latency_ms: u64,
+    /// "manual" when a user pin chose the model; NULL for router decisions.
+    pub override_kind: Option<String>,
 }
 
 #[cfg(test)]
@@ -298,6 +354,33 @@ mod tests {
             phase: StatusPhase::Routing,
         }).unwrap();
         assert_eq!(status["phase"], "routing");
+
+        // Nested RoutingDecision must serialize camelCase (mirrors the TS
+        // interface in src/types/stream.ts).
+        let routing = serde_json::to_value(StreamEvent::Routing {
+            decision: RoutingDecision {
+                target: Target::Titan,
+                confidence: 0.91,
+                complexity: 4,
+                reason: "multi-file code".into(),
+                flags: RoutingFlags { tools: true, ..Default::default() },
+                est_in_tokens: 600,
+                est_out_tokens: 2000,
+                handoff_note: "refactor auth".into(),
+                source: DecisionSource::Herald,
+            },
+            final_target: Target::Titan,
+        }).unwrap();
+        assert_eq!(routing["finalTarget"], "titan");
+        assert_eq!(routing["decision"]["target"], "titan");
+        let confidence = routing["decision"]["confidence"].as_f64().unwrap();
+        assert!((confidence - 0.91).abs() < 1e-3, "confidence: {confidence}");
+        assert_eq!(routing["decision"]["estInTokens"], 600);
+        assert_eq!(routing["decision"]["estOutTokens"], 2000);
+        assert_eq!(routing["decision"]["handoffNote"], "refactor auth");
+        assert_eq!(routing["decision"]["source"], "herald");
+        assert_eq!(routing["decision"]["flags"]["longForm"], false);
+        assert_eq!(routing["decision"]["flags"]["multiStep"], false);
     }
 
     #[test]

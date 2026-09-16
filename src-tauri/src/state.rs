@@ -14,6 +14,13 @@ pub struct AppState {
     /// Streaming cancellation registry (keyed by conversation — M0 has one
     /// active stream per conversation by construction; M1 may re-key).
     pub streams: RwLock<HashMap<String, StreamEntry>>,
+    /// Capability facts from the last successful model discovery — the
+    /// policy engine's vision/context hard rules read this (design §5.4).
+    pub model_registry: RwLock<Vec<crate::types::ModelInfo>>,
+    /// Follow-up suggestion chips per conversation (Herald sidecar, §3.7).
+    /// Cleared whenever a new send starts for that conversation. Arc-shared
+    /// so spawned sidecar tasks can write their results.
+    pub suggestions: Arc<RwLock<HashMap<String, Vec<String>>>>,
     providers: RwLock<HashMap<String, Arc<dyn Provider>>>,
 }
 
@@ -36,8 +43,44 @@ impl AppState {
             settings,
             http,
             streams: RwLock::new(HashMap::new()),
+            model_registry: RwLock::new(Vec::new()),
+            suggestions: Arc::new(RwLock::new(HashMap::new())),
             providers: RwLock::new(providers),
         }
+    }
+
+    /// Capability facts for a model id, if discovery has run.
+    pub fn registry_model(&self, model: &str) -> Option<crate::types::ModelInfo> {
+        self.model_registry
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .find(|m| m.id == model)
+            .cloned()
+    }
+
+    /// Swap in fresh discovery results (called by the list_models command).
+    pub fn update_model_registry(&self, models: Vec<crate::types::ModelInfo>) {
+        *self
+            .model_registry
+            .write()
+            .unwrap_or_else(|p| p.into_inner()) = models;
+    }
+
+    /// Herald follow-up chips for a conversation, if the sidecar ran.
+    pub fn take_suggestions(&self, conversation_id: &str) -> Vec<String> {
+        self.suggestions
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(conversation_id)
+            .unwrap_or_default()
+    }
+
+    pub fn set_suggestions(&self, conversation_id: &str, items: Vec<String>) {
+        self.suggestions
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(conversation_id.to_string(), items);
     }
 
     pub fn provider_for(&self, endpoint_id: &str) -> Result<Arc<dyn Provider>, CmdError> {

@@ -36,6 +36,19 @@ pub struct SettingsCache {
     values: RwLock<HashMap<String, String>>,
 }
 
+impl Clone for SettingsCache {
+    fn clone(&self) -> Self {
+        Self {
+            values: RwLock::new(
+                self.values
+                    .read()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone(),
+            ),
+        }
+    }
+}
+
 impl SettingsCache {
     pub fn new(values: HashMap<String, String>) -> Self {
         Self {

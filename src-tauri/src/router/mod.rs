@@ -6,3 +6,4 @@
 pub mod config;
 pub mod herald;
 pub mod policy;
+pub mod sidecars;
