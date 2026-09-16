@@ -4,7 +4,10 @@
 
 use rusqlite::Connection;
 
-const MIGRATIONS: &[(&str, &str)] = &[("0001_init", include_str!("migrations/0001_init.sql"))];
+const MIGRATIONS: &[(&str, &str)] = &[
+    ("0001_init", include_str!("migrations/0001_init.sql")),
+    ("0002_add_reasoning", include_str!("migrations/0002_add_reasoning.sql")),
+];
 
 pub fn run(conn: &Connection) -> rusqlite::Result<()> {
     let current: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -29,10 +32,10 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         run(&conn).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 1);
+        assert_eq!(v, MIGRATIONS.len() as i64);
         // Re-running on an already-migrated connection must not re-apply.
         run(&conn).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 1);
+        assert_eq!(v, MIGRATIONS.len() as i64);
     }
 }

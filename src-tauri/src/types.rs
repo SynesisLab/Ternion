@@ -201,6 +201,9 @@ pub struct Message {
     pub conversation_id: String,
     pub role: ChatRole,
     pub content: Vec<ContentPart>,
+    /// Reasoning passthrough (thinking models); rendered in a collapsible
+    /// block, never fed back to non-reasoning models.
+    pub reasoning: Option<String>,
     pub model_role: Option<ModelRole>,
     pub model_id: Option<String>,
     pub endpoint_id: Option<String>,

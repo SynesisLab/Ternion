@@ -4,10 +4,12 @@
 //! command fns and Tauri's macro-generated `__cmd__` helpers reachable at
 //! `commands::<name>`, which is what `generate_handler!` requires.
 
+pub mod chat;
 pub mod conversations;
 pub mod models;
 pub mod settings;
 
+pub use chat::*;
 pub use conversations::*;
 pub use models::*;
 pub use settings::*;

@@ -1,17 +1,14 @@
 //! Native Ollama adapter (design §5.2): `/api/tags` discovery and
 //! `/api/chat` NDJSON streaming.
 
-use std::sync::Arc;
-
 use futures::future::BoxFuture;
+use futures::StreamExt;
 use serde::Deserialize;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use super::{ndjson::LineSplitter, Provider, ProviderError};
-use crate::{
-    types::{ChatContent, ChatMessage, ChatRequest, ModelInfo, StreamEvent},
-};
+use super::{ndjson::LineSplitter, ndjson::parse_chat_line, Provider, ProviderError};
+use crate::types::{ChatContent, ChatRequest, ModelInfo, StatusPhase, StreamEvent};
 
 pub struct OllamaAdapter {
     endpoint_id: String,
@@ -65,12 +62,115 @@ impl Provider for OllamaAdapter {
 
     fn chat(
         &self,
-        _req: ChatRequest,
-        _events: mpsc::Sender<StreamEvent>,
-        _cancel: CancellationToken,
+        req: ChatRequest,
+        events: mpsc::Sender<StreamEvent>,
+        cancel: CancellationToken,
     ) -> BoxFuture<'_, ()> {
-        // Wired to the NDJSON parser in step 7.
-        Box::pin(async { log::debug!("ollama chat: wired in step 7") })
+        Box::pin(async move {
+            self.chat_impl(req, &events, &cancel).await;
+        })
+    }
+}
+
+impl OllamaAdapter {
+    async fn chat_impl(
+        &self,
+        req: ChatRequest,
+        events: &mpsc::Sender<StreamEvent>,
+        cancel: &CancellationToken,
+    ) {
+        let url = format!("{}/api/chat", self.base_url);
+        let body = build_chat_body(&req);
+
+        // `loading_model` status: Ollama's NDJSON doesn't announce loads, but
+        // the connect phase is real signal for the UI spinner.
+        if events
+            .send(StreamEvent::Status {
+                phase: StatusPhase::Connecting,
+            })
+            .await
+            .is_err()
+        {
+            return;
+        }
+
+        let resp = match self.http.post(&url).json(&body).send().await {
+            Ok(resp) => resp,
+            Err(e) => {
+                let _ = events
+                    .send(StreamEvent::Error {
+                        code: "endpoint_unreachable".into(),
+                        message: e.to_string(),
+                        retryable: true,
+                    })
+                    .await;
+                return;
+            }
+        };
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let text = resp.text().await.unwrap_or_default();
+            // Ollama error bodies are `{"error": "..."}` — extract the message.
+            let message = serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(String::from))
+                .unwrap_or_else(|| text.clone());
+            let _ = events
+                .send(StreamEvent::Error {
+                    code: "http_error".into(),
+                    message: format!("HTTP {status}: {message}"),
+                    retryable: status >= 500 || status == 429,
+                })
+                .await;
+            return;
+        }
+
+        let mut stream = resp.bytes_stream();
+        let mut splitter = LineSplitter::new();
+
+        loop {
+            let chunk = tokio::select! {
+                biased;
+
+                // Dropping the response closes the connection and frees
+                // Ollama's generation slot (design §5.2).
+                _ = cancel.cancelled() => return,
+
+                chunk = stream.next() => match chunk {
+                    Some(Ok(chunk)) => chunk,
+                    Some(Err(e)) => {
+                        let _ = events
+                            .send(StreamEvent::Error {
+                                code: "stream_error".into(),
+                                message: e.to_string(),
+                                retryable: true,
+                            })
+                            .await;
+                        return;
+                    }
+                    None => {
+                        // Server closed: flush any trailing line.
+                        if let Some(line) = splitter.finish() {
+                            for ev in parse_chat_line(&line) {
+                                if events.send(ev).await.is_err() {
+                                    return;
+                                }
+                            }
+                        }
+                        return;
+                    }
+                }
+            };
+
+            for line in splitter.push(&chunk) {
+                for ev in parse_chat_line(&line) {
+                    if events.send(ev).await.is_err() {
+                        return; // consumer gone (webview closed / stop)
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -208,7 +308,7 @@ fn flatten_content(content: &ChatContent) -> (String, Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{ChatRole, ChatParams};
+    use crate::types::{ChatMessage, ChatParams, ChatRole};
 
     #[test]
     fn parse_tags_full_fixture() {
@@ -300,5 +400,50 @@ mod tests {
         let models = adapter.list_models_impl().await.expect("live list_models");
         println!("live models: {models:#?}");
         assert!(!models.is_empty());
+    }
+
+    /// Live streaming probe: real NDJSON through the chat_impl pump.
+    #[tokio::test]
+    #[ignore = "requires local Ollama running on :11434"]
+    async fn live_chat_stream() {
+        let adapter = OllamaAdapter::new(
+            "ep_local_ollama",
+            "http://127.0.0.1:11434",
+            reqwest::Client::new(),
+        );
+        let (tx, mut rx) = mpsc::channel::<StreamEvent>(64);
+        let cancel = CancellationToken::new();
+        let req = ChatRequest {
+            endpoint_id: "ep_local_ollama".into(),
+            model: "gemma3:4b".into(),
+            messages: vec![ChatMessage {
+                id: "m1".into(),
+                role: ChatRole::User,
+                content: ChatContent::Text("Reply in exactly five words.".into()),
+                tool_calls: None,
+                tool_call_id: None,
+            }],
+            tools: None,
+            params: ChatParams::default(),
+        };
+        let task = tokio::spawn(async move {
+            adapter.chat_impl(req, &tx, &cancel).await;
+        });
+
+        let mut got_text = String::new();
+        let mut got_usage = false;
+        while let Some(ev) = rx.recv().await {
+            match ev {
+                StreamEvent::TextDelta { text } => got_text.push_str(&text),
+                StreamEvent::Usage { .. } => got_usage = true,
+                StreamEvent::Error { code, message, .. } => panic!("error event: {code}: {message}"),
+                StreamEvent::Done => break,
+                _ => {}
+            }
+        }
+        task.await.unwrap();
+        println!("live stream text: {got_text:?}");
+        assert!(!got_text.is_empty(), "no text deltas");
+        assert!(got_usage, "no usage event");
     }
 }

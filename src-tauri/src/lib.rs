@@ -1,3 +1,4 @@
+mod chat;
 mod commands;
 mod db;
 mod error;
@@ -25,6 +26,8 @@ pub fn run() {
         )
         .invoke_handler(tauri::generate_handler![
             commands::ping,
+            commands::chat_send,
+            commands::chat_stop,
             commands::list_conversations,
             commands::create_conversation,
             commands::rename_conversation,

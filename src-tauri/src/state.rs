@@ -18,6 +18,7 @@ pub struct AppState {
 }
 
 /// Cancellation entry for an in-flight stream.
+#[derive(Clone)]
 pub struct StreamEntry {
     pub cancel: tokio_util::sync::CancellationToken,
     pub message_id: String,

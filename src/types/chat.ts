@@ -37,6 +37,7 @@ export interface Message {
   tokensIn: number | null;
   tokensOut: number | null;
   latencyMs: number | null;
+  reasoning: string | null;
   status: MessageStatus;
   error: string | null;
   createdAt: number;

@@ -118,6 +118,10 @@ impl Database {
         .await
     }
 
+    pub async fn get_conversation(&self, id: String) -> Result<Option<Conversation>, CmdError> {
+        self.run(move |c| get_conversation_sync(c, &id)).await
+    }
+
     pub async fn rename_conversation(&self, id: String, title: String) -> Result<(), CmdError> {
         self.run(move |c| {
             c.execute(
@@ -227,6 +231,7 @@ impl Database {
         &self,
         id: String,
         content: Vec<ContentPart>,
+        reasoning: Option<String>,
         status: MessageStatus,
         tokens_in: Option<u64>,
         tokens_out: Option<u64>,
@@ -242,10 +247,10 @@ impl Database {
         self.run(move |c| {
             c.execute(
                 "UPDATE messages
-                 SET content = ?2, status = ?3, tokens_in = ?4, tokens_out = ?5,
-                     latency_ms = ?6, error = ?7
+                 SET content = ?2, reasoning = ?3, status = ?4, tokens_in = ?5,
+                     tokens_out = ?6, latency_ms = ?7, error = ?8
                  WHERE id = ?1",
-                params![id, json, status_str, tokens_in, tokens_out, latency_ms, error],
+                params![id, json, reasoning, status_str, tokens_in, tokens_out, latency_ms, error],
             )
             .map(|_| ())
         })
@@ -339,6 +344,7 @@ fn row_to_message(row: &Row) -> rusqlite::Result<Message> {
         conversation_id: row.get("conversation_id")?,
         role: parse_role(&role),
         content: parse_parts(&content),
+        reasoning: row.get("reasoning")?,
         model_role: parse_model_role(row.get("model_role")?),
         model_id: row.get("model_id")?,
         endpoint_id: row.get("endpoint_id")?,
@@ -368,7 +374,7 @@ fn get_conversation_sync(conn: &Connection, id: &str) -> DbResult<Option<Convers
 
 fn get_messages_sync(conn: &Connection, conversation_id: &str, limit: i64) -> DbResult<Vec<Message>> {
     let mut stmt = conn.prepare(
-        "SELECT id, conversation_id, role, content, model_role, model_id, endpoint_id,
+        "SELECT id, conversation_id, role, content, reasoning, model_role, model_id, endpoint_id,
                 tokens_in, tokens_out, latency_ms, status, error, created_at
          FROM messages WHERE conversation_id = ?1
          ORDER BY created_at, rowid LIMIT ?2",
@@ -396,7 +402,7 @@ mod tests {
         // Second open must succeed without re-applying migrations.
         let db = Database::open(&path).unwrap();
         let seeds = db.get_all_settings().await.unwrap();
-        assert!(seeds.iter().any(|(k, v)| k == "ollama.base_url"));
+        assert!(seeds.iter().any(|(k, _)| k == "ollama.base_url"));
     }
 
     #[tokio::test]
@@ -468,6 +474,7 @@ mod tests {
             vec![ContentPart::Text {
                 text: "hi there".into(),
             }],
+            Some("thinking hard".into()),
             MessageStatus::Complete,
             Some(17),
             Some(4),
@@ -485,6 +492,7 @@ mod tests {
         assert_eq!(msgs[1].status, MessageStatus::Complete);
         assert_eq!(msgs[1].tokens_out, Some(4));
         assert_eq!(msgs[1].latency_ms, Some(1234));
+        assert_eq!(msgs[1].reasoning.as_deref(), Some("thinking hard"));
         assert_eq!(msgs[1].model_id.as_deref(), Some("gemma3:4b"));
     }
 
