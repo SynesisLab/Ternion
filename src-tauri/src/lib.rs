@@ -2,9 +2,12 @@ mod commands;
 mod db;
 mod error;
 mod ids;
+mod providers;
 mod settings;
 mod state;
 mod types;
+
+use std::time::Duration;
 
 use state::AppState;
 
@@ -28,6 +31,7 @@ pub fn run() {
             commands::delete_conversation,
             commands::set_conversation_model,
             commands::get_messages,
+            commands::list_models,
             commands::get_setting,
             commands::set_setting,
         ])
@@ -41,11 +45,11 @@ pub fn run() {
             std::fs::create_dir_all(&dir)
                 .map_err(|e| -> Box<dyn std::error::Error> { format!("create data dir: {e}").into() })?;
 
-            let db = db::Database::open(&dir.join("ternion.db"))
+            let database = db::Database::open(&dir.join("ternion.db"))
                 .map_err(|e| -> Box<dyn std::error::Error> { format!("open database: {e}").into() })?;
 
             // Sweep assistant rows left 'streaming' by a previous crash.
-            let swept = db
+            let swept = database
                 .with_conn_sync(|c| {
                     c.execute(
                         "UPDATE messages
@@ -60,7 +64,7 @@ pub fn run() {
             }
 
             // get_all_settings is async (spawn_blocking); use the sync path during setup.
-            let pairs = db
+            let pairs = database
                 .with_conn_sync(|c| {
                     let mut stmt = c.prepare("SELECT key, value FROM settings")?;
                     let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
@@ -68,10 +72,18 @@ pub fn run() {
                 })
                 .map_err(|e| -> Box<dyn std::error::Error> { format!("load settings: {e}").into() })?;
 
-            app.manage(AppState {
-                db,
-                settings: crate::settings::SettingsCache::new(pairs.into_iter().collect()),
-            });
+            let settings = crate::settings::SettingsCache::new(pairs.iter().cloned().collect());
+            let base = settings
+                .get_or(settings::keys::OLLAMA_BASE_URL, "http://127.0.0.1:11434");
+
+            // Streams idle while a model loads — only a connect timeout.
+            let http = reqwest::Client::builder()
+                .connect_timeout(Duration::from_secs(5))
+                .build()
+                .map_err(|e| -> Box<dyn std::error::Error> { format!("http client: {e}").into() })?;
+            let providers = providers::build_providers(&base, http.clone());
+
+            app.manage(AppState::new(database, settings, http, providers));
             Ok(())
         })
         .run(tauri::generate_context!())

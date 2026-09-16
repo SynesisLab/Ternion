@@ -5,9 +5,11 @@
 //! `commands::<name>`, which is what `generate_handler!` requires.
 
 pub mod conversations;
+pub mod models;
 pub mod settings;
 
 pub use conversations::*;
+pub use models::*;
 pub use settings::*;
 
 use crate::error::CmdError;
