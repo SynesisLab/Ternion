@@ -12,6 +12,24 @@ pub mod keys {
     pub const CHAT_KEEP_ALIVE: &str = "chat.keep_alive";
     pub const APP_CLOSE_TO_TRAY: &str = "app.close_to_tray";
     pub const UI_THEME: &str = "ui.theme";
+
+    // Triad v1 (design §3) — mirrors `router/config.rs`. Keep in sync.
+    pub const TRIAD_ENABLED: &str = "triad.enabled";
+    pub const TRIAD_SKIP_ROUTER: &str = "triad.skip_router";
+    pub const TRIAD_ROLE_HERALD: &str = "triad.role.herald";
+    pub const TRIAD_ROLE_SCOUT: &str = "triad.role.scout";
+    pub const TRIAD_ROLE_TITAN: &str = "triad.role.titan";
+    pub const TRIAD_MIN_CONFIDENCE: &str = "triad.min_confidence";
+    pub const TRIAD_DEESCALATION_CONFIDENCE: &str = "triad.deescalation_confidence";
+    pub const TRIAD_STICKY_TURNS: &str = "triad.sticky_turns";
+    pub const TRIAD_SCOUT_OUTPUT_CEILING: &str = "triad.scout_output_ceiling";
+    pub const TRIAD_HANDOFF_RECENT_MESSAGES: &str = "triad.handoff_recent_messages";
+    pub const TRIAD_SIDECAR_TITLES: &str = "triad.sidecar_titles";
+    pub const TRIAD_SIDECAR_SUGGESTIONS: &str = "triad.sidecar_suggestions";
+    pub const TRIAD_HERALD_TIMEOUT_MS: &str = "triad.herald_timeout_ms";
+    pub const HERALD_KEEP_ALIVE: &str = "herald.keep_alive";
+    pub const TRIAD_SCOUT_KEEP_ALIVE: &str = "triad.scout_keep_alive";
+    pub const TRIAD_TITAN_KEEP_ALIVE: &str = "triad.titan_keep_alive";
 }
 
 pub struct SettingsCache {

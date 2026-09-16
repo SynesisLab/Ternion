@@ -4,6 +4,7 @@ mod db;
 mod error;
 mod ids;
 mod providers;
+mod router;
 mod settings;
 mod state;
 mod tray;
