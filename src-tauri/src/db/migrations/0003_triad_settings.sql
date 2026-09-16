@@ -15,7 +15,7 @@ INSERT INTO settings (key, value) VALUES
   ('triad.handoff_recent_messages', '6'),
   ('triad.sidecar_titles', 'true'),
   ('triad.sidecar_suggestions', 'true'),
-  ('triad.herald_timeout_ms', '4000'),
+  ('triad.herald_timeout_ms', '8000'),
   ('herald.keep_alive', '24h'),
   ('triad.scout_keep_alive', '10m'),
   ('triad.titan_keep_alive', '3m')

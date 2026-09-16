@@ -4,6 +4,8 @@
 
 pub mod ndjson;
 pub mod ollama;
+#[cfg(test)]
+pub mod test_support;
 
 use std::collections::HashMap;
 use std::sync::Arc;

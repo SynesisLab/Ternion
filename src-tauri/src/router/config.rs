@@ -90,7 +90,9 @@ impl Default for TriadConfig {
             handoff_recent_messages: 6,
             sidecar_titles: true,
             sidecar_suggestions: true,
-            herald_timeout_ms: 4000,
+            // Generous: Herald is keep-alive-pinned so warm calls land well
+            // under this; the timeout only bites on cold loads or a down model.
+            herald_timeout_ms: 8000,
             herald_keep_alive: "24h".into(),
             scout_keep_alive: "10m".into(),
             titan_keep_alive: "3m".into(),
@@ -224,7 +226,7 @@ mod tests {
         assert_eq!(cfg.scout_output_ceiling, 1024);
         assert_eq!(cfg.handoff_recent_messages, 6);
         assert!(cfg.sidecar_titles && cfg.sidecar_suggestions);
-        assert_eq!(cfg.herald_timeout_ms, 4000);
+        assert_eq!(cfg.herald_timeout_ms, 8000);
         assert_eq!(cfg.herald_keep_alive, "24h");
         assert_eq!(cfg.scout_keep_alive, "10m");
         assert_eq!(cfg.titan_keep_alive, "3m");

@@ -25,7 +25,7 @@ impl OllamaAdapter {
         }
     }
 
-    async fn list_models_impl(&self) -> Result<Vec<ModelInfo>, ProviderError> {
+    pub(crate) async fn list_models_impl(&self) -> Result<Vec<ModelInfo>, ProviderError> {
         let url = format!("{}/api/tags", self.base_url);
         let resp = self
             .http
