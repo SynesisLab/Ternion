@@ -21,6 +21,8 @@ pub struct AppState {
     /// Cleared whenever a new send starts for that conversation. Arc-shared
     /// so spawned sidecar tasks can write their results.
     pub suggestions: Arc<RwLock<HashMap<String, Vec<String>>>>,
+    /// Bundled tool set (§6.1). Immutable after startup.
+    pub tool_registry: crate::tools::ToolRegistry,
     providers: RwLock<HashMap<String, Arc<dyn Provider>>>,
 }
 
@@ -45,6 +47,7 @@ impl AppState {
             streams: RwLock::new(HashMap::new()),
             model_registry: RwLock::new(Vec::new()),
             suggestions: Arc::new(RwLock::new(HashMap::new())),
+            tool_registry: crate::tools::ToolRegistry::bundled(),
             providers: RwLock::new(providers),
         }
     }

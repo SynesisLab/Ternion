@@ -7,6 +7,7 @@ mod providers;
 mod router;
 mod settings;
 mod state;
+mod tools;
 mod tray;
 mod types;
 

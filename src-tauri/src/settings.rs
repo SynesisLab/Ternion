@@ -13,6 +13,9 @@ pub mod keys {
     pub const APP_CLOSE_TO_TRAY: &str = "app.close_to_tray";
     pub const UI_THEME: &str = "ui.theme";
 
+    // Tool runtime (design §6.1).
+    pub const TOOLS_MAX_HOPS: &str = "tools.max_hops";
+
     // Triad v1 (design §3) — mirrors `router/config.rs`. Keep in sync.
     pub const TRIAD_ENABLED: &str = "triad.enabled";
     pub const TRIAD_SKIP_ROUTER: &str = "triad.skip_router";

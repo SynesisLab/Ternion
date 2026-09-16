@@ -16,7 +16,7 @@ use crate::{
     error::CmdError,
     types::{
         ChatRole, ContentPart, Conversation, Message, MessageRouting, MessageStatus, ModelRole,
-        RoutingDecision, RoutingEvent, Target,
+        RoutingDecision, RoutingEvent, Target, ToolCallRow,
     },
     ids,
 };
@@ -273,6 +273,95 @@ impl Database {
                  SET status = 'error', error = COALESCE(error, 'stream interrupted by shutdown')
                  WHERE status = 'streaming'",
                 [],
+            )
+        })
+        .await
+    }
+
+    // -- tool calls (M2, design §6.1) --------------------------------------
+
+    /// Record the start of one tool call (status `running`). A crash
+    /// mid-execution leaves the row visible rather than silently lost.
+    pub async fn insert_tool_call(
+        &self,
+        id: String,
+        message_id: String,
+        tool: String,
+        args_json: String,
+        created_at: i64,
+    ) -> Result<(), CmdError> {
+        self.run(move |c| {
+            c.execute(
+                "INSERT INTO tool_calls (id, message_id, tool, args, status, created_at)
+                 VALUES (?1, ?2, ?3, ?4, 'running', ?5)",
+                params![id, message_id, tool, args_json, created_at],
+            )
+            .map(|_| ())
+        })
+        .await
+    }
+
+    /// Fill in the outcome once execution ends.
+    pub async fn finish_tool_call(
+        &self,
+        id: String,
+        result: String,
+        status: String,
+        permission_mode: Option<String>,
+    ) -> Result<(), CmdError> {
+        let mode = permission_mode;
+        self.run(move |c| {
+            c.execute(
+                "UPDATE tool_calls SET result = ?2, status = ?3, permission_mode = ?4
+                 WHERE id = ?1",
+                params![id, result, status, mode],
+            )
+            .map(|_| ())
+        })
+        .await
+    }
+
+    /// All tool calls behind one assistant message, oldest first (DTO join
+    /// uses the same ordering).
+    pub async fn list_tool_calls(&self, message_id: String) -> Result<Vec<ToolCallRow>, CmdError> {
+        self.run(move |c| {
+            let mut stmt = c.prepare(
+                "SELECT id, message_id, tool, args, result, status, permission_mode, created_at
+                 FROM tool_calls WHERE message_id = ?1 ORDER BY created_at, rowid",
+            )?;
+            let rows = stmt
+                .query_map([message_id], |row| {
+                    Ok(ToolCallRow {
+                        id: row.get("id")?,
+                        message_id: row.get("message_id")?,
+                        tool: row.get("tool")?,
+                        args: row.get("args")?,
+                        result: row.get("result")?,
+                        status: row.get("status")?,
+                        permission_mode: row.get("permission_mode")?,
+                        created_at: row.get("created_at")?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    /// Tool calls across a whole conversation (older than `before_ms`) — the
+    /// policy engine's H3 signal (≥ 2 prior tool results ⇒ Titan).
+    pub async fn count_prior_tool_calls(
+        &self,
+        conversation_id: String,
+        before_ms: i64,
+    ) -> Result<i64, CmdError> {
+        self.run(move |c| {
+            c.query_row(
+                "SELECT COUNT(*) FROM tool_calls tc
+                 JOIN messages m ON m.id = tc.message_id
+                 WHERE m.conversation_id = ?1 AND tc.created_at < ?2",
+                params![conversation_id, before_ms],
+                |r| r.get(0),
             )
         })
         .await

@@ -317,6 +317,22 @@ pub struct RoutingEvent {
     pub override_kind: Option<String>,
 }
 
+/// One executed tool call behind an assistant message (tool runtime §6.1).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolCallRow {
+    pub id: String,
+    pub message_id: String,
+    pub tool: String,
+    pub args: Option<String>,
+    pub result: Option<String>,
+    /// running | ok | error | denied
+    pub status: String,
+    /// null until the §6.6 permission matrix (auto | ask | session | always)
+    pub permission_mode: Option<String>,
+    pub created_at: i64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

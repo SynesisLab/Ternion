@@ -215,7 +215,7 @@ async fn stream_once(
         });
     }
 
-    // 7. Request with params from settings; keep-alive follows the role.
+    // 7. Params from settings; keep-alive follows the role.
     let temperature: f32 = state
         .settings
         .get_or(crate::settings::keys::CHAT_TEMPERATURE, "0.7")
@@ -226,99 +226,139 @@ async fn stream_once(
         .get_or(crate::settings::keys::CHAT_CONTEXT_TOKENS, "8192")
         .parse()
         .unwrap_or(8192);
-    let req = ChatRequest {
-        endpoint_id: endpoint_id.clone(),
-        model: routed.model.clone(),
-        messages,
-        tools: None, // tool runtime is M2
-        params: ChatParams {
-            temperature: Some(temperature),
-            top_p: None,
-            num_ctx: Some(num_ctx),
-            max_tokens: None,
-            json_schema: None,
-            keep_alive: Some(routed.keep_alive.clone()),
-        },
-    };
+    let max_hops: u32 = state
+        .settings
+        .get_or(crate::settings::keys::TOOLS_MAX_HOPS, "12")
+        .parse()
+        .unwrap_or(12);
 
-    forward(&StreamEvent::Status {
-        phase: StatusPhase::Connecting,
-    });
-
-    // 8. Spawn the provider stream.
-    let (tx, mut rx) = mpsc::channel::<StreamEvent>(64);
-    let provider: Arc<dyn Provider> = state.provider_for(DEFAULT_ENDPOINT)?;
-    let cancel_for_task = cancel.clone();
-    tokio::spawn(async move {
-        provider.chat(req, tx, cancel_for_task).await;
-    });
-
-    // 9. Consume: forward every event, accumulate, flush periodically.
-    let mut text = String::new();
-    let mut reasoning = String::new();
-    let mut usage: Option<(u64, u64, u64)> = None;
-    let mut last_flush = Instant::now();
+    // 8. Tool loop (§6.1): the model emits tool_call → validate → execute →
+    //    `<tool_result>` message appended → it continues, up to `max_hops`,
+    //    then a forced no-tools summary. An empty registry sends no `tools`
+    //    array at all, so without tools this runs exactly once — M0 behavior.
+    let tool_specs = state.tool_registry.specs();
+    let mut all_text = String::new();
+    let mut all_reasoning = String::new();
+    let mut usage_total = (0u64, 0u64, 0u64);
     let mut final_status = MessageStatus::Complete;
     let mut final_error: Option<String> = None;
+    let mut hops = 0u32;
 
     loop {
-        tokio::select! {
-            biased;
+        let tools = (!tool_specs.is_empty() && hops < max_hops).then(|| tool_specs.clone());
+        let req = ChatRequest {
+            endpoint_id: endpoint_id.clone(),
+            model: routed.model.clone(),
+            messages: std::mem::take(&mut messages),
+            tools,
+            params: ChatParams {
+                temperature: Some(temperature),
+                top_p: None,
+                num_ctx: Some(num_ctx),
+                max_tokens: None,
+                json_schema: None,
+                keep_alive: Some(routed.keep_alive.clone()),
+            },
+        };
 
-            _ = cancel.cancelled() => {
-                final_status = MessageStatus::Stopped;
-                break;
-            }
+        forward(&StreamEvent::Status {
+            phase: StatusPhase::Connecting,
+        });
 
-            ev = rx.recv() => {
-                let Some(ev) = ev else { break }; // provider ended without done
+        // Spawn the provider stream for this hop.
+        let (tx, mut rx) = mpsc::channel::<StreamEvent>(64);
+        let provider: Arc<dyn Provider> = state.provider_for(DEFAULT_ENDPOINT)?;
+        let cancel_for_task = cancel.clone();
+        tokio::spawn(async move {
+            provider.chat(req, tx, cancel_for_task).await;
+        });
 
-                forward(&ev);
+        // Consume: forward every event, accumulate, flush periodically.
+        let hop = pump_stream(state, message_id, cancel, &forward, &mut rx, &all_text).await;
 
-                match ev {
-                    StreamEvent::TextDelta { text: t } => text.push_str(&t),
-                    StreamEvent::ReasoningDelta { text: t } => reasoning.push_str(&t),
-                    StreamEvent::Usage { tokens_in, tokens_out, latency_ms } => {
-                        usage = Some((tokens_in, tokens_out, latency_ms));
-                    }
-                    StreamEvent::Error { code, message, .. } => {
-                        final_status = MessageStatus::Error;
-                        final_error = Some(format!("{code}: {message}"));
-                        break;
-                    }
-                    StreamEvent::Done => {
-                        final_status = MessageStatus::Complete;
-                        break;
-                    }
-                    // status / routing / tool_* (M2): forwarded above.
-                    _ => {}
-                }
+        all_text.push_str(&hop.text);
+        all_reasoning.push_str(&hop.reasoning);
+        usage_total.0 = usage_total.0.saturating_add(hop.usage.unwrap_or_default().0);
+        usage_total.1 = usage_total.1.saturating_add(hop.usage.unwrap_or_default().1);
+        usage_total.2 = usage_total.2.saturating_add(hop.usage.unwrap_or_default().2);
 
-                if text.len() >= FLUSH_CHARS || last_flush.elapsed() >= FLUSH_INTERVAL {
-                    persist_partial(state, message_id, &reasoning, &text).await?;
-                    last_flush = Instant::now();
-                }
-            }
+        if hop.status != MessageStatus::Complete {
+            final_status = hop.status;
+            final_error = hop.error;
+            break;
+        }
+        if hop.calls.is_empty() {
+            break; // plain text answer — the turn is done
+        }
+
+        hops += 1;
+        if hops >= max_hops {
+            // Budget exhausted: the next (final) call gets no `tools`, and the
+            // model is told to wrap up with what it has (forced summary).
+            messages.push(ChatMessage {
+                id: ids::new_id(),
+                role: ChatRole::System,
+                content: ChatContent::Text(
+                    "Tool budget exhausted for this turn. Summarize what you have \
+                     learned and answer now without further tool calls."
+                        .into(),
+                ),
+                tool_calls: None,
+                tool_call_id: None,
+                tool_name: None,
+            });
+        }
+
+        // The assistant's tool-call hop joins the context so the provider
+        // sees the exchange it started.
+        messages.push(ChatMessage {
+            id: message_id.to_string(),
+            role: ChatRole::Assistant,
+            content: ChatContent::Text(hop.text.clone()),
+            tool_calls: Some(hop.calls.clone()),
+            tool_call_id: None,
+            tool_name: None,
+        });
+
+        // Validate → execute → wrap → append, one result message per call.
+        for call in &hop.calls {
+            let (result_text, is_error) = execute_tool_call(state, message_id, call).await?;
+            let envelope = format!(
+                r#"<tool_result id="{}" source="untrusted">{result_text}</tool_result>"#,
+                call.id
+            );
+            forward(&StreamEvent::ToolResult {
+                call_id: call.id.clone(),
+                content: result_text.clone(),
+                is_error: Some(is_error),
+            });
+            messages.push(ChatMessage {
+                id: ids::new_id(),
+                role: ChatRole::Tool,
+                content: ChatContent::Text(envelope),
+                tool_calls: None,
+                tool_call_id: Some(call.id.clone()),
+                tool_name: Some(call.name.clone()),
+            });
         }
     }
 
-    // 10. Final persist (covers any un-flushed partial).
-    let (tokens_in, tokens_out, latency_ms) = usage.unwrap_or((0, 0, 0));
-    let reasoning_opt = if reasoning.is_empty() {
+    // 9. Final persist (covers any un-flushed partial).
+    let reasoning_opt = if all_reasoning.is_empty() {
         None
     } else {
-        Some(reasoning.clone())
+        Some(all_reasoning.clone())
     };
     state
         .db
         .update_assistant_message(
             message_id.to_string(),
-            parts_for(&text),
+            parts_for(&all_text),
             reasoning_opt,
             final_status,
-            Some(tokens_in),
-            Some(tokens_out),
-            Some(latency_ms),
+            Some(usage_total.0),
+            Some(usage_total.1),
+            Some(usage_total.2),
             final_error.clone(),
         )
         .await?;
@@ -335,23 +375,208 @@ async fn stream_once(
         .auto_title(conv_id.clone(), title_from(&args.content))
         .await?;
 
-    // 11. Sidecars (§3.7) — out-of-band, best-effort, never block the result.
-    spawn_sidecars(state, args, &history, &text, switching, final_status).await;
+    // 10. Sidecars (§3.7) — out-of-band, best-effort, never block the result.
+    spawn_sidecars(state, args, &history, &all_text, switching, final_status).await;
 
     // Scout ran past its output ceiling (§3.6 trigger 4) — the UI offers
-    // "⚡ Continue with Titan".
+    // "⚡ Continue with Titan". Summed across tool hops.
     let escalation_available = routed.role == Some(ModelRole::Scout)
         && final_status == MessageStatus::Complete
-        && tokens_out > u64::from(cfg.scout_output_ceiling);
+        && usage_total.1 > u64::from(cfg.scout_output_ceiling);
 
     Ok(ChatSendResult {
         message_id: message_id.to_string(),
         status: final_status,
-        tokens_in,
-        tokens_out,
-        latency_ms,
+        tokens_in: usage_total.0,
+        tokens_out: usage_total.1,
+        latency_ms: usage_total.2,
         escalation_available,
     })
+}
+
+/// One model stream's output: the accumulated text/reasoning, usage, terminal
+/// status, and any tool calls the model emitted (wire call ids preserved —
+/// persistence re-keys them, §6.1).
+struct StreamHop {
+    text: String,
+    reasoning: String,
+    usage: Option<(u64, u64, u64)>,
+    status: MessageStatus,
+    error: Option<String>,
+    calls: Vec<crate::types::ToolCall>,
+}
+
+/// Consume one provider stream: forward every event, accumulate, flush
+/// periodically. Tool-call events are collected into `calls` (Start gives
+/// id+name; Delta appends to the arguments JSON) — execution happens after
+/// the stream ends, in the orchestrator loop.
+async fn pump_stream(
+    state: &AppState,
+    message_id: &str,
+    cancel: &tokio_util::sync::CancellationToken,
+    forward: &Arc<dyn Fn(&StreamEvent) + Send + Sync>,
+    rx: &mut mpsc::Receiver<StreamEvent>,
+    base_text: &str,
+) -> StreamHop {
+    let mut hop = StreamHop {
+        text: String::new(),
+        reasoning: String::new(),
+        usage: None,
+        status: MessageStatus::Complete,
+        error: None,
+        calls: Vec::new(),
+    };
+    let mut last_flush = Instant::now();
+
+    loop {
+        tokio::select! {
+            biased;
+
+            _ = cancel.cancelled() => {
+                hop.status = MessageStatus::Stopped;
+                return hop;
+            }
+
+            ev = rx.recv() => {
+                let Some(ev) = ev else {
+                    return hop; // provider ended without done
+                };
+
+                forward(&ev);
+
+                match ev {
+                    StreamEvent::TextDelta { text: t } => hop.text.push_str(&t),
+                    StreamEvent::ReasoningDelta { text: t } => hop.reasoning.push_str(&t),
+                    StreamEvent::Usage { tokens_in, tokens_out, latency_ms } => {
+                        hop.usage = Some((tokens_in, tokens_out, latency_ms));
+                    }
+                    StreamEvent::ToolCallStart { index, id, name } => {
+                        let i = index as usize;
+                        while hop.calls.len() <= i {
+                            hop.calls.push(crate::types::ToolCall {
+                                id: String::new(),
+                                name: String::new(),
+                                args: String::new(),
+                            });
+                        }
+                        hop.calls[i] = crate::types::ToolCall {
+                            id,
+                            name,
+                            args: String::new(),
+                        };
+                    }
+                    StreamEvent::ToolCallDelta { index, args_delta } => {
+                        if let Some(call) = hop.calls.get_mut(index as usize) {
+                            call.args.push_str(&args_delta);
+                        }
+                    }
+                    StreamEvent::Error { code, message, .. } => {
+                        hop.status = MessageStatus::Error;
+                        hop.error = Some(format!("{code}: {message}"));
+                        return hop;
+                    }
+                    StreamEvent::Done => {
+                        hop.status = MessageStatus::Complete;
+                        return hop;
+                    }
+                    // status / routing / tool_result: forwarded above.
+                    _ => {}
+                }
+
+                if hop.text.len() >= FLUSH_CHARS || last_flush.elapsed() >= FLUSH_INTERVAL {
+                    let combined = format!("{base_text}{}", hop.text);
+                    // Best-effort mid-stream flush; the final persist covers
+                    // any gap (§6.1: never abort the turn on a flush error).
+                    let _ = persist_partial(state, message_id, &hop.reasoning, &combined).await;
+                    last_flush = Instant::now();
+                }
+            }
+        }
+    }
+}
+
+/// Validate → gate → execute one tool call, persisting the outcome row.
+/// Validation failures and unknown tools produce an `error` row fed back to
+/// the model; the loop always continues so it can correct course (§6.1).
+async fn execute_tool_call(
+    state: &AppState,
+    message_id: &str,
+    call: &crate::types::ToolCall,
+) -> Result<(String, bool), CmdError> {
+    let row_id = ids::new_id();
+    let now = ids::now_ms();
+
+    let Some(tool) = state.tool_registry.get(&call.name) else {
+        let msg = format!("unknown tool `{}`", call.name);
+        state
+            .db
+            .insert_tool_call(
+                row_id.clone(),
+                message_id.to_string(),
+                call.name.clone(),
+                call.args.clone(),
+                now,
+            )
+            .await?;
+        state
+            .db
+            .finish_tool_call(row_id, msg.clone(), "error".to_string(), Some("auto".into()))
+            .await?;
+        return Ok((msg, true));
+    };
+
+    let args: serde_json::Value = serde_json::from_str(&call.args)
+        .unwrap_or(serde_json::Value::Null);
+    if let Err(e) = crate::tools::validate_args(&tool.spec().input_schema, &args) {
+        let msg = e.message();
+        state
+            .db
+            .insert_tool_call(
+                row_id.clone(),
+                message_id.to_string(),
+                call.name.clone(),
+                call.args.clone(),
+                now,
+            )
+            .await?;
+        state
+            .db
+            .finish_tool_call(row_id, msg.clone(), "error".to_string(), Some("auto".into()))
+            .await?;
+        return Ok((msg, true));
+    }
+
+    state
+        .db
+        .insert_tool_call(
+            row_id.clone(),
+            message_id.to_string(),
+            call.name.clone(),
+            call.args.clone(),
+            now,
+        )
+        .await?;
+
+    // §6.6 permission matrix arrives in M2.6; everything auto-runs until the
+    // fs tools (which mutate) exist. Recorded as "auto" in permission_mode.
+    let ctx = crate::tools::ToolExecCtx::default();
+    let executed = tool.execute(args, &ctx).await;
+    let (result_text, is_error) = match executed {
+        Ok(outcome) => {
+            let (text, err) = outcome.into_parts();
+            (
+                crate::tools::clamp_result(text),
+                err,
+            )
+        }
+        Err(e) => (e.message(), true),
+    };
+    let status = if is_error { "error" } else { "ok" };
+    state
+        .db
+        .finish_tool_call(row_id, result_text.clone(), status.to_string(), Some("auto".into()))
+        .await?;
+    Ok((result_text, is_error))
 }
 
 /// One turn's routing outcome: the resolved model + Triad role, the policy
@@ -440,6 +665,13 @@ async fn route_turn(
                 let turns_on_titan = turns_on_titan(history);
                 let mut ctx = herald::route_context_for(&args.content, false);
                 ctx.turns_on_titan = turns_on_titan;
+                // H3 (§3.5): ≥ 2 tool results already in context ⇒ Titan.
+                ctx.prior_tool_results = state
+                    .db
+                    .count_prior_tool_calls(args.conversation_id.clone(), ids::now_ms())
+                    .await
+                    .unwrap_or(0)
+                    .max(0) as usize;
                 apply_capability_facts(state, &cfg, &mut ctx);
 
                 let herald_decision = match cfg.roles.herald.as_deref() {
@@ -741,6 +973,8 @@ fn title_from(content: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
     use crate::{
         providers::test_support::{app_with, app_with_settings, FakeProvider},
         settings::keys,
@@ -1312,5 +1546,267 @@ mod tests {
             .unwrap();
         let title = poll_title(&state).await;
         assert_eq!(title, "Auth Migration Plan");
+    }
+
+    // -- M2.2a: tool runtime loop --------------------------------------------
+
+    /// One hop that emits a tool call (no herald configured in these tests, so
+    /// `received[i]` indexes stay aligned with orchestrator hops).
+    fn tool_call_script(name: &str, args: &str, text: &str) -> Vec<StreamEvent> {
+        vec![
+            StreamEvent::TextDelta { text: text.into() },
+            StreamEvent::ToolCallStart { index: 0, id: "call_0".into(), name: name.into() },
+            StreamEvent::ToolCallDelta { index: 0, args_delta: args.into() },
+            StreamEvent::Usage { tokens_in: 9, tokens_out: 6, latency_ms: 11 },
+            StreamEvent::Done,
+        ]
+    }
+
+    fn with_echo_tool(state: &mut AppState) {
+        state
+            .tool_registry
+            .register(Arc::new(crate::tools::testkit::EchoTool {
+                result: String::new(),
+            }));
+    }
+
+    fn last_tool_message(req: &ChatRequest) -> &ChatMessage {
+        req.messages
+            .iter()
+            .rev()
+            .find(|m| m.role == ChatRole::Tool)
+            .expect("request carries a tool result message")
+    }
+
+    #[tokio::test]
+    async fn tool_loop_executes_call_and_feeds_result() {
+        let provider = FakeProvider::scripted_sequence(vec![
+            tool_call_script("echo", r#"{"text":"ping"}"#, "checking"),
+            main_stream("answered", 5),
+        ]);
+        let received = provider.received.clone();
+        let (_dir, mut state) = app_with(provider);
+        with_echo_tool(&mut state);
+        create_conv(&state).await;
+
+        let collected = Arc::new(Mutex::new(Vec::new()));
+        let sink = collected.clone();
+        let forward = Arc::new(move |ev: &StreamEvent| {
+            sink.lock().unwrap_or_else(|p| p.into_inner()).push(ev.clone())
+        }) as Arc<dyn Fn(&StreamEvent) + Send + Sync>;
+        let result = send(&state, args("look up something"), forward).await.unwrap();
+
+        // Usage sums across both hops (9+17 in, 6+5 out, 11+123 ms).
+        assert_eq!(result.status, MessageStatus::Complete);
+        assert_eq!(result.tokens_in, 26);
+        assert_eq!(result.tokens_out, 11);
+        assert_eq!(result.latency_ms, 134);
+
+        let reqs = received.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        // Hop 0 declares the tool; hop 1 still has it (budget not exhausted).
+        let specs0 = reqs[0].tools.as_ref().expect("tools declared on hop 0");
+        assert_eq!(specs0[0].name, "echo");
+        assert!(reqs[1].tools.is_some());
+
+        // The context for hop 1: assistant echo of the tool call + the
+        // untrusted-annotated result envelope.
+        let asst = reqs[1]
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == ChatRole::Assistant && m.tool_calls.is_some())
+            .expect("assistant tool_calls echoed into context");
+        let calls = asst.tool_calls.as_ref().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].id, "call_0");
+        assert_eq!(calls[0].args, r#"{"text":"ping"}"#);
+
+        let tool_msg = last_tool_message(&reqs[1]);
+        assert_eq!(tool_msg.tool_call_id.as_deref(), Some("call_0"));
+        assert_eq!(tool_msg.tool_name.as_deref(), Some("echo"));
+        match &tool_msg.content {
+            ChatContent::Text(t) => assert!(
+                t.contains(r#"<tool_result id="call_0" source="untrusted">echo: ping</tool_result>"#),
+                "{t}"
+            ),
+            _ => unreachable!(),
+        }
+
+        // Persisted outcome row.
+        let msgs = messages(&state).await;
+        let rows = state.db.list_tool_calls(msgs[1].id.clone()).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].tool, "echo");
+        assert_eq!(rows[0].status, "ok");
+        assert_eq!(rows[0].result.as_deref(), Some("echo: ping"));
+
+        // Final message concatenates hop texts and closes on the answer.
+        match &msgs[1].content[0] {
+            ContentPart::Text { text } => assert_eq!(text, "checkinganswered"),
+            _ => unreachable!(),
+        }
+
+        // A ToolResult event was forwarded live for the UI.
+        let events = collected.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        assert!(events.iter().any(|ev| matches!(
+            ev,
+            StreamEvent::ToolResult {
+                call_id,
+                content,
+                is_error: Some(false)
+            } if call_id == "call_0" && content == "echo: ping"
+        )));
+    }
+
+    #[tokio::test]
+    async fn tool_call_validation_failure_does_not_execute() {
+        let provider = FakeProvider::scripted_sequence(vec![
+            tool_call_script("echo", "{}", ""),
+            main_stream("recovered", 4),
+        ]);
+        let received = provider.received.clone();
+        let (_dir, mut state) = app_with(provider);
+        with_echo_tool(&mut state);
+        create_conv(&state).await;
+
+        let result = chat_send_inner(&state, args("hi")).await.unwrap();
+        assert_eq!(result.status, MessageStatus::Complete, "loop continues past bad args");
+
+        let reqs = received.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let tool_msg = last_tool_message(&reqs[1]);
+        match &tool_msg.content {
+            ChatContent::Text(t) => {
+                assert!(t.contains("missing required argument `text`"), "{t}");
+            }
+            _ => unreachable!(),
+        }
+
+        let msgs = messages(&state).await;
+        let rows = state.db.list_tool_calls(msgs[1].id.clone()).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].status, "error");
+        assert!(
+            rows[0].result.as_deref().unwrap_or("").contains("missing required argument"),
+            "row records the validation failure: {:?}",
+            rows[0].result
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_tool_becomes_error_result() {
+        let provider = FakeProvider::scripted_sequence(vec![
+            tool_call_script("nosuch", "{}", ""),
+            main_stream("recovered", 4),
+        ]);
+        let received = provider.received.clone();
+        let (_dir, state) = app_with(provider);
+        create_conv(&state).await;
+
+        let result = chat_send_inner(&state, args("hi")).await.unwrap();
+        assert_eq!(result.status, MessageStatus::Complete);
+
+        let reqs = received.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let tool_msg = last_tool_message(&reqs[1]);
+        match &tool_msg.content {
+            ChatContent::Text(t) => assert!(t.contains("unknown tool `nosuch`"), "{t}"),
+            _ => unreachable!(),
+        }
+
+        let msgs = messages(&state).await;
+        let rows = state.db.list_tool_calls(msgs[1].id.clone()).await.unwrap();
+        assert_eq!(rows[0].status, "error");
+        assert_eq!(rows[0].result.as_deref(), Some("unknown tool `nosuch`"));
+    }
+
+    #[tokio::test]
+    async fn tool_budget_caps_hops() {
+        let provider = FakeProvider::scripted_sequence(vec![
+            tool_call_script("echo", r#"{"text":"a"}"#, "hop1"),
+            tool_call_script("echo", r#"{"text":"b"}"#, "hop2"),
+            main_stream("summary", 7),
+        ]);
+        let received = provider.received.clone();
+        let (_dir, mut state) = app_with_settings(
+            provider,
+            &[(keys::TOOLS_MAX_HOPS, "1")],
+        );
+        with_echo_tool(&mut state);
+        create_conv(&state).await;
+
+        let result = chat_send_inner(&state, args("go")).await.unwrap();
+        assert_eq!(result.status, MessageStatus::Complete);
+
+        let reqs = received.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        assert!(reqs[0].tools.is_some());
+        // After the budget is consumed: no tools, and the forced-summary
+        // system instruction is on the wire.
+        assert!(reqs[1].tools.is_none());
+        assert!(
+            system_text_of(&reqs[1]).contains("Tool budget exhausted for this turn."),
+            "forced summary instruction: {}",
+            system_text_of(&reqs[1])
+        );
+        assert!(reqs[2].tools.is_none());
+
+        // Both calls executed and persisted.
+        let msgs = messages(&state).await;
+        let rows = state.db.list_tool_calls(msgs[1].id.clone()).await.unwrap();
+        assert_eq!(rows.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn no_tools_registered_sends_no_tool_specs() {
+        let provider = FakeProvider::scripted(main_stream("hi", 2));
+        let received = provider.received.clone();
+        let (_dir, state) = app_with(provider);
+        create_conv(&state).await;
+        chat_send_inner(&state, args("hi")).await.unwrap();
+        let reqs = received.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        assert!(reqs[0].tools.is_none(), "empty registry ⇒ no tools array");
+    }
+
+    #[tokio::test]
+    async fn prior_tool_results_promote_to_titan() {
+        // Turn 1: two tool calls land (H3 counts rows); turn 2's heuristic
+        // routing must pick up prior_tool_results ≥ 2 ⇒ Titan.
+        let provider = FakeProvider::scripted_sequence(vec![
+            vec![
+                StreamEvent::TextDelta { text: "using tools".into() },
+                StreamEvent::ToolCallStart { index: 0, id: "call_0".into(), name: "echo".into() },
+                StreamEvent::ToolCallDelta { index: 0, args_delta: r#"{"text":"a"}"#.into() },
+                StreamEvent::ToolCallStart { index: 1, id: "call_1".into(), name: "echo".into() },
+                StreamEvent::ToolCallDelta { index: 1, args_delta: r#"{"text":"b"}"#.into() },
+                StreamEvent::Usage { tokens_in: 9, tokens_out: 6, latency_ms: 11 },
+                StreamEvent::Done,
+            ],
+            main_stream("first", 3),
+            main_stream("second", 3),
+        ]);
+        let received = provider.received.clone();
+        let (_dir, mut state) = app_with_settings(
+            provider,
+            &[
+                (keys::TRIAD_ROLE_SCOUT, "scout-model"),
+                (keys::TRIAD_ROLE_TITAN, "titan-model"),
+            ],
+        );
+        with_echo_tool(&mut state);
+        create_conv(&state).await;
+
+        chat_send_inner(&state, args("hi")).await.unwrap();
+        let msgs1 = messages(&state).await;
+        assert_eq!(msgs1[1].model_role, Some(ModelRole::Scout), "H6 on turn 1");
+
+        chat_send_inner(&state, args_with_id("um2", "hi again")).await.unwrap();
+
+        let events = state.db.list_routing_events("c1".into(), 10).await.unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].decision.source, DecisionSource::Heuristic);
+        assert_eq!(events[0].final_target, Target::Titan);
+        assert_eq!(events[0].decision.reason, "multiple tool results");
+        assert_eq!(events[0].actual_model, "titan-model");
+
+        let msgs2 = messages(&state).await;
+        assert_eq!(msgs2.last().unwrap().model_id.as_deref(), Some("titan-model"));
     }
 }
