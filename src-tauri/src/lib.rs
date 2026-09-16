@@ -6,6 +6,7 @@ mod ids;
 mod providers;
 mod settings;
 mod state;
+mod tray;
 mod types;
 
 use std::time::Duration;
@@ -14,6 +15,16 @@ use state::AppState;
 
 pub fn run() {
     tauri::Builder::default()
+        // Must be the FIRST plugin: it detects the second launch before
+        // anything else runs (docs: register before any other plugin).
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            use tauri::Manager;
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();
+                let _ = w.unminimize();
+                let _ = w.set_focus();
+            }
+        }))
         .plugin(
             tauri_plugin_log::Builder::new()
                 .targets([
@@ -89,7 +100,29 @@ pub fn run() {
             let providers = providers::build_providers(&base, http.clone());
 
             app.manage(AppState::new(database, settings, http, providers));
+
+            tray::setup(app)?;
+
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            // Close-to-tray (design §7): the ✕ hides the window while the
+            // setting is on; Quit comes from the tray menu.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    use tauri::Manager;
+                    let app = window.app_handle();
+                    let close_to_tray = app
+                        .state::<AppState>()
+                        .settings
+                        .get_or(settings::keys::APP_CLOSE_TO_TRAY, "true")
+                        != "false";
+                    if close_to_tray {
+                        let _ = window.hide();
+                        api.prevent_close();
+                    }
+                }
+            }
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
