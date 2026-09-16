@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::{ndjson::LineSplitter, ndjson::parse_chat_line, Provider, ProviderError};
-use crate::types::{ChatContent, ChatRequest, ModelInfo, StatusPhase, StreamEvent};
+use crate::types::{ChatContent, ChatRequest, ChatRole, ModelInfo, StatusPhase, StreamEvent};
 
 pub struct OllamaAdapter {
     endpoint_id: String,
@@ -264,6 +264,35 @@ pub(crate) fn build_chat_body(req: &ChatRequest) -> serde_json::Value {
         if !images.is_empty() {
             m["images"] = serde_json::json!(images);
         }
+        match msg.role {
+            ChatRole::Assistant => {
+                if let Some(calls) = &msg.tool_calls {
+                    // Ollama's native form wants `arguments` as an object; our
+                    // ToolCall stores them as JSON text — reparse, tolerate junk.
+                    m["tool_calls"] = serde_json::json!(calls
+                        .iter()
+                        .map(|c| {
+                            serde_json::json!({
+                                "function": {
+                                    "name": c.name,
+                                    "arguments": serde_json::from_str::<serde_json::Value>(&c.args)
+                                        .unwrap_or(serde_json::json!({})),
+                                }
+                            })
+                        })
+                        .collect::<Vec<_>>());
+                }
+            }
+            ChatRole::Tool => {
+                if let Some(name) = &msg.tool_name {
+                    m["tool_name"] = serde_json::json!(name);
+                }
+                if let Some(id) = &msg.tool_call_id {
+                    m["tool_call_id"] = serde_json::json!(id);
+                }
+            }
+            _ => {}
+        }
         messages.push(m);
     }
 
@@ -273,6 +302,22 @@ pub(crate) fn build_chat_body(req: &ChatRequest) -> serde_json::Value {
         "stream": true,
         "keep_alive": req.params.keep_alive.clone().unwrap_or_else(|| "5m".into()),
     });
+    if let Some(tools) = &req.tools {
+        // OpenAI function-call form — Ollama accepts it verbatim (design §6.1).
+        body["tools"] = serde_json::json!(tools
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "type": "function",
+                    "function": {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.input_schema,
+                    },
+                })
+            })
+            .collect::<Vec<_>>());
+    }
     if !options.is_empty() {
         body["options"] = serde_json::Value::Object(options);
     }
@@ -308,7 +353,7 @@ fn flatten_content(content: &ChatContent) -> (String, Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{ChatMessage, ChatParams, ChatRole};
+    use crate::types::{ChatMessage, ChatParams, ChatRole, ToolCall, ToolSpec};
 
     #[test]
     fn parse_tags_full_fixture() {
@@ -351,6 +396,7 @@ mod tests {
                 content: ChatContent::Text("hello".into()),
                 tool_calls: None,
                 tool_call_id: None,
+                tool_name: None,
             }],
             tools: None,
             params: ChatParams {
@@ -390,6 +436,82 @@ mod tests {
         assert_eq!(body["format"], serde_json::json!({"type": "object"}));
     }
 
+    #[test]
+    fn build_chat_body_with_tools_uses_openai_function_form() {
+        let req = ChatRequest {
+            endpoint_id: "e".into(),
+            model: "m".into(),
+            messages: vec![],
+            tools: Some(vec![ToolSpec {
+                name: "fs_read".into(),
+                description: "Read a text file".into(),
+                input_schema: serde_json::json!({"type": "object"}),
+            }]),
+            params: ChatParams::default(),
+        };
+        let body = build_chat_body(&req);
+        let tools = body["tools"].as_array().expect("tools array");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["type"], "function");
+        assert_eq!(tools[0]["function"]["name"], "fs_read");
+        assert_eq!(tools[0]["function"]["parameters"]["type"], "object");
+    }
+
+    #[test]
+    fn build_chat_body_maps_tool_conversation_messages() {
+        let req = ChatRequest {
+            endpoint_id: "e".into(),
+            model: "m".into(),
+            messages: vec![
+                ChatMessage {
+                    id: "m1".into(),
+                    role: ChatRole::User,
+                    content: ChatContent::Text("read it".into()),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    tool_name: None,
+                },
+                ChatMessage {
+                    id: "m2".into(),
+                    role: ChatRole::Assistant,
+                    content: ChatContent::Text(String::new()),
+                    tool_calls: Some(vec![ToolCall {
+                        id: "call_0".into(),
+                        name: "fs_read".into(),
+                        args: r#"{"path":"C:/w/a.txt"}"#.into(),
+                    }]),
+                    tool_call_id: None,
+                    tool_name: None,
+                },
+                ChatMessage {
+                    id: "m3".into(),
+                    role: ChatRole::Tool,
+                    content: ChatContent::Text("file body".into()),
+                    tool_calls: None,
+                    tool_call_id: Some("call_0".into()),
+                    tool_name: Some("fs_read".into()),
+                },
+            ],
+            tools: None,
+            params: ChatParams::default(),
+        };
+        let body = build_chat_body(&req);
+
+        // Assistant tool_calls: args re-parsed from JSON text to an object.
+        let calls = body["messages"][1]["tool_calls"].as_array().expect("calls");
+        assert_eq!(calls[0]["function"]["name"], "fs_read");
+        assert_eq!(calls[0]["function"]["arguments"]["path"], "C:/w/a.txt");
+
+        // Tool result: native form wants tool_name (+ tool_call_id).
+        assert_eq!(body["messages"][2]["role"], "tool");
+        assert_eq!(body["messages"][2]["content"], "file body");
+        assert_eq!(body["messages"][2]["tool_name"], "fs_read");
+        assert_eq!(body["messages"][2]["tool_call_id"], "call_0");
+
+        // User messages stay plain.
+        assert!(body["messages"][0].get("tool_calls").is_none());
+    }
+
     /// Live check against the real Ollama (run explicitly:
     /// `cargo test -- --ignored`).
     #[tokio::test]
@@ -422,6 +544,7 @@ mod tests {
                 content: ChatContent::Text("Reply in exactly five words.".into()),
                 tool_calls: None,
                 tool_call_id: None,
+                tool_name: None,
             }],
             tools: None,
             params: ChatParams::default(),

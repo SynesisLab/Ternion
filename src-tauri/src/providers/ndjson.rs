@@ -99,10 +99,38 @@ pub(crate) fn parse_chat_line(line: &str) -> Vec<StreamEvent> {
                 });
             }
         }
-        // message.tool_calls exist in the wire format but M0 ignores them —
-        // the tool runtime (M2) is the seam.
-        if message.get("tool_calls").is_some() {
-            log::debug!("ollama: tool_calls present but tool runtime is M2; ignoring");
+        // Ollama native /api/chat streams tool calls complete in one delta —
+        // `arguments` arrives fully-formed (no incremental JSON). Each call
+        // becomes ToolCallStart + a single ToolCallDelta carrying the whole
+        // arguments object as JSON text. `id` is synthesized (Ollama native
+        // has none); the orchestrator re-keys calls when persisting (M2.2).
+        if let Some(calls) = message.get("tool_calls").and_then(|c| c.as_array()) {
+            for (i, call) in calls.iter().enumerate() {
+                let function = call.get("function");
+                let name = function
+                    .and_then(|f| f.get("name"))
+                    .and_then(|n| n.as_str())
+                    .unwrap_or_default();
+                if name.is_empty() {
+                    log::debug!("ollama: tool call without a name skipped");
+                    continue;
+                }
+                let args = function
+                    .and_then(|f| f.get("arguments"))
+                    .cloned()
+                    .unwrap_or(serde_json::json!({}));
+                let index = i as u32;
+                events.push(StreamEvent::ToolCallStart {
+                    index,
+                    id: format!("call_{index}"),
+                    name: name.to_string(),
+                });
+                events.push(StreamEvent::ToolCallDelta {
+                    index,
+                    args_delta: serde_json::to_string(&args)
+                        .unwrap_or_else(|_| "{}".to_string()),
+                });
+            }
         }
     }
 
@@ -217,6 +245,65 @@ mod tests {
     #[test]
     fn empty_deltas_produce_no_events() {
         let line = r#"{"message":{"role":"assistant","content":""},"done":false}"#;
+        assert!(parse_chat_line(line).is_empty());
+    }
+
+    #[test]
+    fn tool_call_line_emits_start_and_full_args_delta() {
+        let line = r#"{"message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"fs_read","arguments":{"path":"C:/w/a.txt","from":1,"to":40}}}]},"done":false}"#;
+        let events = parse_chat_line(line);
+        assert_eq!(kinds(&events), vec!["tool_call_start", "tool_call_delta"]);
+        match &events[0] {
+            StreamEvent::ToolCallStart { index, id, name } => {
+                assert_eq!(*index, 0);
+                assert_eq!(id, "call_0");
+                assert_eq!(name, "fs_read");
+            }
+            _ => unreachable!(),
+        }
+        match &events[1] {
+            StreamEvent::ToolCallDelta { index, args_delta } => {
+                assert_eq!(*index, 0);
+                let args: serde_json::Value = serde_json::from_str(args_delta).unwrap();
+                assert_eq!(args["path"], "C:/w/a.txt");
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn multiple_tool_calls_in_one_delta_get_distinct_indices() {
+        let line = r#"{"message":{"tool_calls":[{"function":{"name":"a","arguments":{}}},{"function":{"name":"b","arguments":{}}}]},"done":false}"#;
+        let events = parse_chat_line(line);
+        assert_eq!(
+            kinds(&events),
+            vec!["tool_call_start", "tool_call_delta", "tool_call_start", "tool_call_delta"]
+        );
+        match &events[2] {
+            StreamEvent::ToolCallStart { index, id, name } => {
+                assert_eq!(*index, 1);
+                assert_eq!(id, "call_1");
+                assert_eq!(name, "b");
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn tool_call_without_arguments_defaults_to_empty_object() {
+        let line = r#"{"message":{"tool_calls":[{"function":{"name":"ping"}}]},"done":false}"#;
+        let events = parse_chat_line(line);
+        match &events[1] {
+            StreamEvent::ToolCallDelta { args_delta, .. } => {
+                assert_eq!(args_delta, "{}");
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn tool_call_without_a_name_is_skipped() {
+        let line = r#"{"message":{"tool_calls":[{"function":{"arguments":{"x":1}}}]},"done":false}"#;
         assert!(parse_chat_line(line).is_empty());
     }
 

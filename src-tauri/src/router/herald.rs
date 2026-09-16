@@ -150,6 +150,7 @@ pub fn build_classify_request(herald_model: &str, input: &ClassifyInput<'_>, kee
         content: ChatContent::Text(HERALD_SYSTEM.into()),
         tool_calls: None,
         tool_call_id: None,
+        tool_name: None,
     });
     for (user, assistant) in FEW_SHOTS {
         messages.push(ChatMessage {
@@ -158,6 +159,7 @@ pub fn build_classify_request(herald_model: &str, input: &ClassifyInput<'_>, kee
             content: ChatContent::Text((*user).into()),
             tool_calls: None,
             tool_call_id: None,
+            tool_name: None,
         });
         messages.push(ChatMessage {
             id: String::new(),
@@ -165,6 +167,7 @@ pub fn build_classify_request(herald_model: &str, input: &ClassifyInput<'_>, kee
             content: ChatContent::Text((*assistant).into()),
             tool_calls: None,
             tool_call_id: None,
+            tool_name: None,
         });
     }
     messages.push(ChatMessage {
@@ -173,6 +176,7 @@ pub fn build_classify_request(herald_model: &str, input: &ClassifyInput<'_>, kee
         content: ChatContent::Text(render_input(input)),
         tool_calls: None,
         tool_call_id: None,
+        tool_name: None,
     });
 
     ChatRequest {
@@ -453,6 +457,7 @@ mod tests {
                 content: ChatContent::Text("hello there".into()),
                 tool_calls: None,
                 tool_call_id: None,
+                tool_name: None,
             }],
             latest_message: "what is 15% of 82?",
             sticky_on_titan: false,
@@ -478,6 +483,7 @@ mod tests {
                 content: ChatContent::Text(long.clone()),
                 tool_calls: None,
                 tool_call_id: None,
+                tool_name: None,
             }],
             latest_message: "hi",
             sticky_on_titan: true,

@@ -39,6 +39,7 @@ fn text_request(ctx: &SidecarCtx, system: &str, user: &str) -> ChatRequest {
                 content: ChatContent::Text(system.into()),
                 tool_calls: None,
                 tool_call_id: None,
+                tool_name: None,
             },
             ChatMessage {
                 id: String::new(),
@@ -46,6 +47,7 @@ fn text_request(ctx: &SidecarCtx, system: &str, user: &str) -> ChatRequest {
                 content: ChatContent::Text(user.into()),
                 tool_calls: None,
                 tool_call_id: None,
+                tool_name: None,
             },
         ],
         tools: None,

@@ -661,6 +661,25 @@ Example schema (one of twelve):
 - This keeps the bundled tool set small while allowing arbitrary ecosystem
   tools (browser control, DBs, anything) without core changes.
 
+### 6.5b OpenWebUI tools & functions compatibility (backlog)
+
+- Accept **Open WebUI "Tools"** manifests alongside OpenAI JSON-schema specs —
+  merge into the registry namespaced `owui__<tool>` like MCP servers, so the
+  ecosystem's existing tool definitions load without core changes.
+- Stretch: load **Open WebUI "Functions"** (filters/pipelines) as request
+  middleware (inlet/outlet hooks around provider calls), enabled per chat.
+- Scope decision lands post-M2 with the MCP client work; nothing in M2 blocks
+  either direction (both are registry merge + adapter problems).
+
+### 6.5c Context compression (backlog)
+
+- Beyond the rolling digest (§3.4): when the token budget approaches the
+  target model's context window, progressively summarize older history with
+  the summarizer (Herald/Titan) and replace it with a compact summary,
+  preserving pinned facts and decisions; per-role context sizes differ
+  (Herald classify context, Scout/Titan `num_ctx`), so compression is
+  per-request, computed against the routed model's window.
+
 ### 6.6 Permission system & approval UI
 
 Three-mode matrix per `(tool × workspace)`:

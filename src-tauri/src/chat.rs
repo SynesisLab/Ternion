@@ -153,6 +153,7 @@ async fn stream_once(
             content: ChatContent::Text(system_prompt),
             tool_calls: None,
             tool_call_id: None,
+            tool_name: None,
         });
     }
     if switching {
@@ -166,6 +167,7 @@ async fn stream_once(
                     )),
                     tool_calls: None,
                     tool_call_id: None,
+                    tool_name: None,
                 });
             }
         }
@@ -184,6 +186,7 @@ async fn stream_once(
                 )),
                 tool_calls: None,
                 tool_call_id: None,
+                tool_name: None,
             });
         }
     }
@@ -208,6 +211,7 @@ async fn stream_once(
             content: ChatContent::Parts(msg.content.clone()),
             tool_calls: None,
             tool_call_id: None,
+            tool_name: None,
         });
     }
 
@@ -540,6 +544,7 @@ fn to_chat_message(msg: &DbMessage) -> ChatMessage {
         content: ChatContent::Parts(msg.content.clone()),
         tool_calls: None,
         tool_call_id: None,
+        tool_name: None,
     }
 }
 
