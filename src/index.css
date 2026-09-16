@@ -1,0 +1,32 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Design tokens (dark-first; M4's theme setting only swaps these variables) */
+@theme {
+  --color-bg: #0b0e14;
+  --color-panel: #11141d;
+  --color-panel-2: #171b27;
+  --color-edge: #232838;
+  --color-ink: #e2e8f0;
+  --color-muted: #8b94a7;
+  --color-accent: #7c5cff;
+  --color-accent-2: #2dd4bf;
+  --color-danger: #f87171;
+  --color-warn: #fbbf24;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-ink);
+  font-family:
+    "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
