@@ -10,6 +10,52 @@
         background: #0b0e14;
       }
     </style>
+    <script>
+      // Webview error trap — must run before the module graph so import-time
+      // crashes are captured too. Release builds have no devtools; errors go
+      // to the app log (ternion.log) via the `log_js` command instead.
+      (function () {
+        function report(level, message) {
+          try {
+            window.__TAURI_INTERNALS__.invoke("log_js", {
+              level: level,
+              message: String(message).slice(0, 4000),
+            });
+          } catch (e) {
+            /* bridge unavailable — nothing else we can do */
+          }
+        }
+        window.addEventListener(
+          "error",
+          function (e) {
+            report(
+              "error",
+              "script error: " +
+                (e.message || "(resource)") +
+                " @ " +
+                (e.filename || "?") +
+                ":" +
+                e.lineno +
+                ":" +
+                e.colno +
+                (e.error && e.error.stack ? "\n" + e.error.stack : ""),
+            );
+          },
+          true, // capture: also catches script-element load failures
+        );
+        window.addEventListener("unhandledrejection", function (e) {
+          var r = e.reason;
+          report(
+            "error",
+            "unhandled rejection: " + (r && r.stack ? r.stack : String(r)),
+          );
+        });
+        window.__ternionBoot = function (message) {
+          report("info", message);
+        };
+        window.__ternionBoot("boot: trap armed");
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

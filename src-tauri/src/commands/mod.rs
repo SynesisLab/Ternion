@@ -32,3 +32,13 @@ pub fn open_external(app: tauri::AppHandle, url: String) -> Result<(), CmdError>
         .open_url(url, None::<&str>)
         .map_err(|e| CmdError::internal(format!("open url: {e}")))
 }
+
+/// Forward a webview-side error/boot marker into the app log — release
+/// builds have no devtools, so this is the only way JS failures surface.
+#[tauri::command]
+pub fn log_js(level: String, message: String) {
+    match level.as_str() {
+        "error" => log::error!(target: "webview", "{message}"),
+        _ => log::info!(target: "webview", "{message}"),
+    }
+}

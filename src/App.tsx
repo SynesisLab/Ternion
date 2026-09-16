@@ -9,6 +9,11 @@ import { SettingsDialog } from "./components/SettingsDialog";
 import { Sidebar } from "./components/Sidebar";
 import { useChatStore } from "./store/chatStore";
 
+// Stable empty fallback: a selector returning a fresh `[]` each call makes
+// zustand's strict equality see a change every store update → React
+// re-render loop → "Maximum update depth exceeded" → blank window.
+const EMPTY_SUGGESTIONS: string[] = [];
+
 export default function App() {
   const init = useChatStore((s) => s.init);
   const conversations = useChatStore((s) => s.conversations);
@@ -34,7 +39,7 @@ export default function App() {
     (s) => (activeId ? (s.escalation[activeId] ?? false) : false),
   );
   const suggestions = useChatStore(
-    (s) => (activeId ? (s.suggestions[activeId] ?? []) : []),
+    (s) => (activeId ? (s.suggestions[activeId] ?? EMPTY_SUGGESTIONS) : EMPTY_SUGGESTIONS),
   );
 
   useEffect(() => {

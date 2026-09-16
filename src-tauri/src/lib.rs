@@ -40,6 +40,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::ping,
             commands::open_external,
+            commands::log_js,
             commands::chat_send,
             commands::chat_stop,
             commands::list_routing_events,
