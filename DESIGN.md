@@ -539,6 +539,38 @@ Both adapters compile to one internal event stream (types in **Appendix A**):
 The UI never knows which provider produced a token — this is what makes
 swapping Scout/Titan mid-thread trivial.
 
+### 5.6 Seamless provider hand-off (planned — post-M4 or folded into M3)
+
+Providers should be *interchangeable at runtime*, not configured once. When
+Ternion detects that more than one viable source exists — a local Ollama/LM
+Studio instance, a workplace LLM gateway, a homelab node, or a cloud API —
+it offers to switch with **one prompt**, and switching never loses the
+conversation.
+
+- **Presence detection.** Endpoints are probed opportunistically (on launch,
+  on network change, on a periodic timer): local ports (`11434`, LM Studio
+  `1234`, llama.cpp `8080`), configured remote profiles, and mDNS-style
+  discovery for homelab nodes when enabled. A provider becomes *available*
+  when its health check passes and at least one usable model answers.
+- **Switch prompt, never silent.** When a new provider becomes available
+  while the user is on another (e.g. the homelab box comes online, or the
+  laptop docks onto the company network), the UI offers:
+  "Remote workstation provider detected — switch roles to it?" with
+  *Switch now · Keep current · Always/never for this endpoint*.
+  Silent failover is explicitly out (routing must stay observable); the
+  prompt is the automatic part.
+- **Role-aware hand-off.** Triad roles re-resolve per endpoint: switching
+  providers re-maps Herald/Scout/Titan to that endpoint's model registry
+  (capability-aware — a provider without vision doesn't get Scout if an
+  image is attached). An in-flight thread continues via the existing
+  handoff machinery (§3.6): digest + recent turns move with the thread.
+- **Degradation & return.** If the active provider dies mid-stream, the
+  turn is retried on the best remaining provider (or queued with a clear
+  banner); when the original returns, another prompt offers to switch back.
+- **Policy hooks.** Privacy mode (§3.10) still wins: local-only suppresses
+  cloud prompts entirely. Cost-guarded endpoints (cloud) never auto-switch;
+  they only prompt with an explicit cost note (§3.8 guardrails).
+
 ---
 
 ## 6. Tool Runtime & File System
@@ -960,7 +992,9 @@ permissions = { fs_edit = "ask", fs_delete = "ask", fs_read = "always" }
 
 Post-v1 backlog: Responses API adapter, PDF/DOCX attachments, scheduled agent
 jobs (Hermes-style), voice input, Echo-powered semantic search, ARM64 build,
-"Forge mode" (Scout drafts + Titan reviews in parallel).
+"Forge mode" (Scout drafts + Titan reviews in parallel), **seamless provider
+hand-off** (§5.6: detect local/remote/workplace/homelab providers, prompt to
+switch, role-aware re-mapping, failover and return).
 
 ---
 
