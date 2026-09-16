@@ -336,10 +336,15 @@ export const useChatStore = create<ChatStore>()((set, get) => ({
 
     try {
       // Resolves when the stream ends; deltas arrive through the Channel.
-      await sendChat(
+      const result = await sendChat(
         { conversationId: convId, userMessageId, content: trimmed, model: fallback },
         (ev) => get().applyStreamEvent(convId, ev),
       );
+      // §3.6: Scout ran past its ceiling — offer the Titan continuation
+      // until the next exchange starts.
+      if (result.escalationAvailable) {
+        set((s) => ({ escalation: { ...s.escalation, [convId]: true } }));
+      }
     } catch (e) {
       // IPC-level failure (e.g. `stream_active`, provider missing). Rows the
       // command did write come back in the refetch; patch live stubs to error.

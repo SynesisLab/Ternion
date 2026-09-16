@@ -76,13 +76,6 @@ impl AppState {
             .unwrap_or_default()
     }
 
-    pub fn set_suggestions(&self, conversation_id: &str, items: Vec<String>) {
-        self.suggestions
-            .write()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(conversation_id.to_string(), items);
-    }
-
     pub fn provider_for(&self, endpoint_id: &str) -> Result<Arc<dyn Provider>, CmdError> {
         self.providers
             .read()

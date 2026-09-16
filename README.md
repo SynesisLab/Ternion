@@ -7,7 +7,9 @@ It speaks native Ollama and any OpenAI-compatible endpoint. See
 [DESIGN.md](./DESIGN.md) for the full product design (the Triad system:
 Herald / Scout / Titan routing).
 
-## Status — M0 (Foundation) complete
+## Status — M0 (Foundation) + M1 (Triad router) complete
+
+**Foundation (M0)**
 
 - **Streaming chat** with any Ollama model: token-by-token rendering, thinking
   blocks (`thinking` models), Stop mid-stream (frees the Ollama slot), usage
@@ -23,8 +25,25 @@ Herald / Scout / Titan routing).
 - **Tray**: Show/Hide · New Chat · Quit; close-to-tray keeps streams alive;
   single-instance (second launch focuses the existing window)
 
-Later milestones: Triad router — Herald/Scout/Titan (M1), tools & file-system
-agency (M2), vision & multi-endpoint (M3), polish/i18n/signing (M4).
+**Triad router (M1)** — the Herald / Scout / Titan system from DESIGN.md §3:
+
+- **Routing precedence**: hard rules → Herald (structured classify call,
+  confidence ≥ 0.65) → heuristics → Scout default; every decision persisted
+  to a `routing_events` table and joined back into the message history
+- **Pins**: Auto / Scout / Titan chips, or pin an explicit model; per-role
+  model assignment in Settings → Triad
+- **Handoff**: on model switch between turns the new model receives a rolling
+  digest of earlier task state plus the router's handoff note; the ribbon
+  marks the switch (⚡)
+- **Hysteresis**: Scout output past its ceiling offers "Continue with Titan";
+  Titan sticks for `sticky_turns` before de-escalating
+- **Sidecars** (Herald-only, fire-and-forget): conversation title refinement,
+  digest maintenance, follow-up suggestion chips
+- **Router log**: per-conversation drawer showing every decision's source,
+  confidence, estimated tokens, and override kind
+
+Later milestones: tools & file-system agency (M2), vision & multi-endpoint
+(M3), polish/i18n/signing (M4).
 
 ## Prerequisites
 
