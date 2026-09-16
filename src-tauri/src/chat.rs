@@ -1782,7 +1782,6 @@ mod tests {
             main_stream("first", 3),
             main_stream("second", 3),
         ]);
-        let received = provider.received.clone();
         let (_dir, mut state) = app_with_settings(
             provider,
             &[

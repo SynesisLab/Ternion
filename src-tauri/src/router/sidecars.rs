@@ -262,6 +262,7 @@ mod tests {
             error: None,
             created_at: 0,
             routing: None,
+            tool_calls: Vec::new(),
         }];
         let t = transcript(&msgs, 6, 100);
         assert!(t.starts_with("[user] "));

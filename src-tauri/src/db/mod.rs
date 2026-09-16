@@ -6,6 +6,7 @@
 pub(crate) mod migrations;
 
 use std::{
+    collections::HashMap,
     path::Path,
     sync::{Arc, Mutex},
 };
@@ -629,7 +630,39 @@ fn row_to_message(row: &Row) -> rusqlite::Result<Message> {
         error: row.get("error")?,
         created_at: row.get("created_at")?,
         routing,
+        // Attached by get_messages_sync (needs a second query; this closure
+        // can't run one).
+        tool_calls: Vec::new(),
     })
+}
+
+/// All tool rows behind one conversation's messages, oldest first, ready to
+/// attach by `message_id` (§6.1).
+fn tool_calls_for_conversation_sync(
+    conn: &Connection,
+    conversation_id: &str,
+) -> DbResult<Vec<ToolCallRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT tc.id, tc.message_id, tc.tool, tc.args, tc.result, tc.status,
+                tc.permission_mode, tc.created_at
+         FROM tool_calls tc
+         JOIN messages m ON m.id = tc.message_id
+         WHERE m.conversation_id = ?1
+         ORDER BY tc.created_at, tc.rowid",
+    )?;
+    let rows = stmt.query_map(params![conversation_id], |r| {
+        Ok(ToolCallRow {
+            id: r.get("id")?,
+            message_id: r.get("message_id")?,
+            tool: r.get("tool")?,
+            args: r.get("args")?,
+            result: r.get("result")?,
+            status: r.get("status")?,
+            permission_mode: r.get("permission_mode")?,
+            created_at: r.get("created_at")?,
+        })
+    })?;
+    rows.collect()
 }
 
 fn get_conversation_sync(conn: &Connection, id: &str) -> DbResult<Option<Conversation>> {
@@ -660,7 +693,19 @@ fn get_messages_sync(conn: &Connection, conversation_id: &str, limit: i64) -> Db
          ORDER BY m.created_at, m.rowid LIMIT ?2",
     )?;
     let rows = stmt.query_map(params![conversation_id, limit], |r| row_to_message(r))?;
-    rows.collect()
+    let mut msgs: Vec<Message> = rows.collect::<Result<_, _>>()?;
+
+    // Attach tool activity (§6.1) in one pass, preserving per-message order.
+    let mut by_message: HashMap<String, Vec<ToolCallRow>> = HashMap::new();
+    for call in tool_calls_for_conversation_sync(conn, conversation_id)? {
+        by_message.entry(call.message_id.clone()).or_default().push(call);
+    }
+    for msg in msgs.iter_mut() {
+        if let Some(calls) = by_message.remove(&msg.id) {
+            msg.tool_calls = calls;
+        }
+    }
+    Ok(msgs)
 }
 
 #[cfg(test)]
@@ -889,6 +934,77 @@ mod tests {
         let events = db.list_routing_events("c1".into(), 10).await.unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].message_id, "a1");
+    }
+
+    /// Tool rows join onto their assistant message, in creation order (§6.1).
+    #[tokio::test]
+    async fn get_messages_joins_tool_calls() {
+        let (_dir, db) = temp_db().await;
+        let now = crate::ids::now_ms();
+        db.create_conversation("c1".into(), now).await.unwrap();
+        db.insert_user_message("u1".into(), "c1".into(), vec![], now)
+            .await
+            .unwrap();
+        db.insert_assistant_placeholder(
+            "a1".into(),
+            "c1".into(),
+            "scout".into(),
+            "ep_local_ollama".into(),
+            now,
+        )
+        .await
+        .unwrap();
+
+        db.insert_tool_call("tc1".into(), "a1".into(), "echo".into(), "{}".into(), now)
+            .await
+            .unwrap();
+        db.insert_tool_call("tc2".into(), "a1".into(), "echo".into(), "{}".into(), now + 1)
+            .await
+            .unwrap();
+        db.finish_tool_call(
+            "tc2".into(),
+            "second".into(),
+            "ok".into(),
+            Some("auto".into()),
+        )
+        .await
+        .unwrap();
+        db.finish_tool_call(
+            "tc1".into(),
+            "bad args".into(),
+            "error".into(),
+            Some("auto".into()),
+        )
+        .await
+        .unwrap();
+
+        // A second conversation's rows must not leak into this page.
+        db.create_conversation("c2".into(), now).await.unwrap();
+        db.insert_assistant_placeholder(
+            "a2".into(),
+            "c2".into(),
+            "scout".into(),
+            "ep_local_ollama".into(),
+            now,
+        )
+        .await
+        .unwrap();
+        db.insert_tool_call("tc3".into(), "a2".into(), "echo".into(), "{}".into(), now)
+            .await
+            .unwrap();
+
+        let msgs = db.get_messages("c1".into()).await.unwrap();
+        assert!(msgs[0].tool_calls.is_empty(), "user message carries no tools");
+        assert_eq!(msgs[1].tool_calls.len(), 2);
+        assert_eq!(msgs[1].tool_calls[0].id, "tc1");
+        assert_eq!(msgs[1].tool_calls[0].status, "error");
+        assert_eq!(msgs[1].tool_calls[0].result.as_deref(), Some("bad args"));
+        assert_eq!(msgs[1].tool_calls[1].id, "tc2");
+        assert_eq!(msgs[1].tool_calls[1].status, "ok");
+        assert_eq!(
+            msgs[1].tool_calls[1].permission_mode.as_deref(),
+            Some("auto")
+        );
     }
 
     /// The rolling digest lives on the conversation row and rides out in the

@@ -5,6 +5,7 @@ import { Markdown } from "./Markdown";
 import { MessageBubble } from "./MessageBubble";
 import { RoutingRibbon } from "./RoutingRibbon";
 import { ThinkingBlock } from "./ThinkingBlock";
+import { ToolActivity } from "./ToolActivity";
 
 const PHASE_LABELS = {
   routing: t("chat.status.routing"),
@@ -24,6 +25,7 @@ function LiveBubble({ draft }: { draft: StreamDraft }) {
         />
       )}
       {draft.reasoning && <ThinkingBlock text={draft.reasoning} active />}
+      {draft.tools.length > 0 && <ToolActivity calls={draft.tools} open />}
       {draft.text.length > 0 ? (
         <div className="prose prose-invert prose-sm max-w-none break-words text-[color:var(--color-ink)] prose-pre:bg-[#0d1017] prose-code:before:hidden prose-code:after:hidden">
           <Markdown text={draft.text} />
@@ -54,7 +56,7 @@ export function MessageList({ conversationId }: { conversationId: string }) {
   const draft = useChatStore((s) => s.drafts[conversationId]);
   const streaming = useChatStore((s) => s.streaming[conversationId] ?? false);
 
-  const scrollKey = `${messages?.length ?? 0}:${draft?.text.length ?? 0}:${draft?.reasoning.length ?? 0}`;
+  const scrollKey = `${messages?.length ?? 0}:${draft?.text.length ?? 0}:${draft?.reasoning.length ?? 0}:${draft?.tools.length ?? 0}`;
   const ref = useAutoScroll<HTMLDivElement>(scrollKey);
 
   if (!messages) return null;

@@ -270,6 +270,10 @@ pub struct Message {
     /// Router decision behind this assistant message (§3.11), joined from
     /// `routing_events` — None for user messages and pre-M1 rows.
     pub routing: Option<MessageRouting>,
+    /// Executed tool calls behind this assistant message (§6.1), oldest
+    /// first. Empty for user messages and turns without tool activity.
+    #[serde(default)]
+    pub tool_calls: Vec<ToolCallRow>,
 }
 
 /// Discovery record for the model picker (from Ollama /api/tags).
@@ -318,7 +322,7 @@ pub struct RoutingEvent {
 }
 
 /// One executed tool call behind an assistant message (tool runtime §6.1).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolCallRow {
     pub id: String,

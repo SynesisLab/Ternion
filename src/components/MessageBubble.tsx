@@ -6,6 +6,7 @@ import type { Message } from "../types/chat";
 import { Markdown } from "./Markdown";
 import { RoutingRibbon } from "./RoutingRibbon";
 import { ThinkingBlock } from "./ThinkingBlock";
+import { ToolActivity, toCallViews } from "./ToolActivity";
 
 function textOf(message: Message): string {
   return message.content
@@ -54,6 +55,9 @@ export const MessageBubble = memo(function MessageBubble({
           text={message.reasoning}
           active={message.status === "streaming"}
         />
+      )}
+      {message.toolCalls.length > 0 && (
+        <ToolActivity calls={toCallViews(message.toolCalls)} />
       )}
       <div className="prose prose-invert prose-sm max-w-none break-words text-[color:var(--color-ink)] prose-pre:bg-[#0d1017] prose-code:before:hidden prose-code:after:hidden">
         <Markdown text={textOf(message)} />

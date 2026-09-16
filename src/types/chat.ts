@@ -44,6 +44,29 @@ export interface MessageRouting {
   latencyMs: number;
 }
 
+/** One executed tool call behind an assistant message (tool runtime §6.1). */
+export interface ToolCallRow {
+  id: string;
+  messageId: string;
+  tool: string;
+  args: string | null;
+  result: string | null;
+  /** running | ok | error | denied */
+  status: "running" | "ok" | "error" | "denied";
+  /** null until the §6.6 permission matrix (auto | ask | session | always). */
+  permissionMode: string | null;
+  createdAt: number;
+}
+
+/** Live/persisted view shape for the tool-activity renderer. */
+export interface ToolCallView {
+  callId: string;
+  name: string;
+  args: string;
+  result: string | null;
+  status: ToolCallRow["status"];
+}
+
 export interface Message {
   id: string;
   conversationId: string;
@@ -61,6 +84,8 @@ export interface Message {
   createdAt: number;
   /** Router decision behind an assistant message; null for user messages. */
   routing: MessageRouting | null;
+  /** Executed tool calls behind an assistant message, oldest first. */
+  toolCalls: ToolCallRow[];
 }
 
 /** Result of a finished `chat_send` invocation. */

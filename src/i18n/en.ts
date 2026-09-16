@@ -21,6 +21,11 @@ export const en = {
   "chat.meta.stopped": "Stopped",
   "chat.meta.error": "Error",
 
+  // Tool runtime (M2)
+  "chat.tools.activity": "Tool activity",
+  "chat.tools.running": "running…",
+  "chat.tools.failed": "failed",
+
   // Triad routing (M1)
   "chat.pin.auto": "Auto",
   "chat.pin.autoTitle": "Triad router picks the model per message",

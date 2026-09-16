@@ -30,6 +30,7 @@ import type {
   Conversation,
   Message,
   ModelInfo,
+  ToolCallView,
 } from "../types/chat";
 import type {
   RoutingDecision,
@@ -45,6 +46,8 @@ export interface StreamDraft {
   routing: { decision: RoutingDecision; finalTarget: Target } | null;
   text: string;
   reasoning: string;
+  /** Live tool activity (§6.1) — replaced by persisted rows after refetch. */
+  tools: ToolCallView[];
   usage: { tokensIn: number; tokensOut: number; latencyMs: number } | null;
   error: { code: string; message: string; retryable: boolean } | null;
 }
@@ -55,6 +58,7 @@ function emptyDraft(): StreamDraft {
     routing: null,
     text: "",
     reasoning: "",
+    tools: [],
     usage: null,
     error: null,
   };
@@ -312,6 +316,7 @@ export const useChatStore = create<ChatStore>()((set, get) => ({
       error: null,
       createdAt: now,
       routing: null,
+      toolCalls: [],
     };
     const placeholder: Message = {
       ...userMessage,
@@ -483,11 +488,73 @@ export const useChatStore = create<ChatStore>()((set, get) => ({
         }));
         break;
       }
+      case "tool_call_start": {
+        set((s) => {
+          const d = s.drafts[conversationId] ?? emptyDraft();
+          return {
+            drafts: {
+              ...s.drafts,
+              [conversationId]: {
+                ...d,
+                tools: [
+                  ...d.tools,
+                  {
+                    callId: ev.id,
+                    name: ev.name,
+                    args: "",
+                    result: null,
+                    status: "running" as const,
+                  },
+                ],
+              },
+            },
+          };
+        });
+        break;
+      }
+      case "tool_call_delta": {
+        set((s) => {
+          const d = s.drafts[conversationId] ?? emptyDraft();
+          // `index` is the wire position; starts arrive in that order, so
+          // positional indexing is exact for the bundled providers.
+          const tools = d.tools.slice();
+          const entry = tools[ev.index];
+          if (entry) {
+            tools[ev.index] = { ...entry, args: entry.args + ev.argsDelta };
+          }
+          return {
+            drafts: { ...s.drafts, [conversationId]: { ...d, tools } },
+          };
+        });
+        break;
+      }
+      case "tool_result": {
+        set((s) => {
+          const d = s.drafts[conversationId] ?? emptyDraft();
+          return {
+            drafts: {
+              ...s.drafts,
+              [conversationId]: {
+                ...d,
+                tools: d.tools.map((c) =>
+                  c.callId === ev.callId
+                    ? {
+                        ...c,
+                        result: ev.content,
+                        status: ev.isError ? ("error" as const) : ("ok" as const),
+                      }
+                    : c,
+                ),
+              },
+            },
+          };
+        });
+        break;
+      }
       case "done":
         // Invoke resolves right after; the finalize path refetches from DB.
         break;
       default:
-        // tool_call_* (M2) — intentionally ignored until that milestone.
         break;
     }
   },
