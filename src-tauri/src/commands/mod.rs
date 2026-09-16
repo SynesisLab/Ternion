@@ -22,3 +22,13 @@ use crate::error::CmdError;
 pub fn ping(app: tauri::AppHandle) -> Result<String, CmdError> {
     Ok(app.package_info().version.to_string())
 }
+
+/// Open a URL in the system browser (markdown links must not navigate the
+/// webview away).
+#[tauri::command]
+pub fn open_external(app: tauri::AppHandle, url: String) -> Result<(), CmdError> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|e| CmdError::internal(format!("open url: {e}")))
+}

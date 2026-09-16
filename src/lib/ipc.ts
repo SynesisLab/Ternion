@@ -1,12 +1,18 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 
-import type { Conversation, Message, ModelInfo } from "../types/chat";
+import type {
+  ChatSendResult,
+  Conversation,
+  Message,
+  ModelInfo,
+} from "../types/chat";
+import type { StreamEvent } from "../types/stream";
 
 /**
  * Typed wrappers around Tauri IPC commands. Every command the Rust core
  * exposes gets one function here; the frontend never calls `invoke`
- * directly elsewhere. (Streaming chat wrappers live with the store —
- * they carry a Channel.)
+ * directly elsewhere. `sendChat` is long-running: it resolves when the
+ * stream ends, with deltas arriving through the Channel callback.
  */
 
 export async function ping(): Promise<string> {
@@ -17,6 +23,29 @@ export async function ping(): Promise<string> {
 
 export async function listModels(): Promise<ModelInfo[]> {
   return invoke<ModelInfo[]>("list_models");
+}
+
+// -- Chat streaming ---------------------------------------------------------
+
+export interface ChatSendArgs {
+  conversationId: string;
+  /** Client-generated id; makes retries idempotent. */
+  userMessageId: string;
+  content: string;
+  model: string;
+}
+
+export function sendChat(
+  args: ChatSendArgs,
+  onEvent: (ev: StreamEvent) => void,
+): Promise<ChatSendResult> {
+  const channel = new Channel<StreamEvent>();
+  channel.onmessage = onEvent;
+  return invoke<ChatSendResult>("chat_send", { args, onEvent: channel });
+}
+
+export function stopChat(conversationId: string): Promise<void> {
+  return invoke("chat_stop", { conversationId });
 }
 
 // -- Conversations --------------------------------------------------------

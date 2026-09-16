@@ -43,6 +43,15 @@ export interface Message {
   createdAt: number;
 }
 
+/** Result of a finished `chat_send` invocation. */
+export interface ChatSendResult {
+  messageId: string;
+  status: MessageStatus;
+  tokensIn: number;
+  tokensOut: number;
+  latencyMs: number;
+}
+
 export interface ModelInfo {
   id: string;
   displayName: string;
