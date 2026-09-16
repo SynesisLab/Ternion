@@ -229,6 +229,19 @@ pub struct Conversation {
     pub workspace_roots: Vec<String>,
     pub system_prompt: Option<String>,
     pub archived: bool,
+    /// Rolling digest maintained by the Herald sidecar (§3.6) — injected as a
+    /// system message on model handoffs. Surfaced for the router log drawer.
+    pub digest: Option<String>,
+}
+
+/// Routing outcome joined onto a message (design §9.2 ribbon data).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageRouting {
+    pub decision: RoutingDecision,
+    pub final_target: Target,
+    pub actual_model: String,
+    pub latency_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -250,6 +263,9 @@ pub struct Message {
     pub status: MessageStatus,
     pub error: Option<String>,
     pub created_at: i64,
+    /// Router decision behind this assistant message (§3.11), joined from
+    /// `routing_events` — None for user messages and pre-M1 rows.
+    pub routing: Option<MessageRouting>,
 }
 
 /// Discovery record for the model picker (from Ollama /api/tags).

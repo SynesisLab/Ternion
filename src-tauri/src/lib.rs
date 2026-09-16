@@ -42,6 +42,7 @@ pub fn run() {
             commands::open_external,
             commands::chat_send,
             commands::chat_stop,
+            commands::list_routing_events,
             commands::list_conversations,
             commands::create_conversation,
             commands::rename_conversation,

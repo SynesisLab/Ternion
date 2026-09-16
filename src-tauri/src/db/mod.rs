@@ -15,8 +15,8 @@ use rusqlite::{params, Connection, Row};
 use crate::{
     error::CmdError,
     types::{
-        ChatRole, ContentPart, Conversation, Message, MessageStatus, ModelRole, RoutingDecision,
-        RoutingEvent, Target,
+        ChatRole, ContentPart, Conversation, Message, MessageRouting, MessageStatus, ModelRole,
+        RoutingDecision, RoutingEvent, Target,
     },
     ids,
 };
@@ -99,7 +99,7 @@ impl Database {
         self.run(|c| {
             let mut stmt = c.prepare(
                 "SELECT id, title, created_at, updated_at, pinned_model,
-                        workspace_roots, system_prompt, archived
+                        workspace_roots, system_prompt, archived, digest
                  FROM conversations WHERE archived = 0
                  ORDER BY updated_at DESC, rowid DESC",
             )?;
@@ -497,12 +497,33 @@ fn row_to_conversation(row: &Row) -> rusqlite::Result<Conversation> {
             .unwrap_or_default(),
         system_prompt: row.get("system_prompt")?,
         archived: row.get::<_, i64>("archived")? != 0,
+        digest: row.get("digest")?,
     })
 }
 
 fn row_to_message(row: &Row) -> rusqlite::Result<Message> {
     let role: String = row.get("role")?;
     let content: String = row.get("content")?;
+    // Router decision joined from routing_events (§3.11); NULL when the row
+    // has no routing_event_id (user messages, pre-M1 rows).
+    let routing = match row.get::<_, Option<String>>("routing_decision")? {
+        Some(json) => {
+            let decision = serde_json::from_str(&json).unwrap_or_else(|e| {
+                log::debug!("unparseable routing decision ({e})");
+                RoutingDecision::default()
+            });
+            Some(MessageRouting {
+                decision,
+                final_target: parse_target(row.get("final_target")?),
+                actual_model: row.get("actual_model")?,
+                latency_ms: row
+                    .get::<_, Option<i64>>("routing_latency_ms")?
+                    .unwrap_or_default()
+                    .max(0) as u64,
+            })
+        }
+        None => None,
+    };
     Ok(Message {
         id: row.get("id")?,
         conversation_id: row.get("conversation_id")?,
@@ -518,13 +539,14 @@ fn row_to_message(row: &Row) -> rusqlite::Result<Message> {
         status: parse_status(row.get("status")?),
         error: row.get("error")?,
         created_at: row.get("created_at")?,
+        routing,
     })
 }
 
 fn get_conversation_sync(conn: &Connection, id: &str) -> DbResult<Option<Conversation>> {
     conn.query_row(
         "SELECT id, title, created_at, updated_at, pinned_model,
-                workspace_roots, system_prompt, archived
+                workspace_roots, system_prompt, archived, digest
          FROM conversations WHERE id = ?1",
         params![id],
         |r| row_to_conversation(r),
@@ -538,10 +560,15 @@ fn get_conversation_sync(conn: &Connection, id: &str) -> DbResult<Option<Convers
 
 fn get_messages_sync(conn: &Connection, conversation_id: &str, limit: i64) -> DbResult<Vec<Message>> {
     let mut stmt = conn.prepare(
-        "SELECT id, conversation_id, role, content, reasoning, model_role, model_id, endpoint_id,
-                tokens_in, tokens_out, latency_ms, status, error, created_at
-         FROM messages WHERE conversation_id = ?1
-         ORDER BY created_at, rowid LIMIT ?2",
+        "SELECT m.id, m.conversation_id, m.role, m.content, m.reasoning, m.model_role,
+                m.model_id, m.endpoint_id, m.tokens_in, m.tokens_out, m.latency_ms,
+                m.status, m.error, m.created_at,
+                re.decision AS routing_decision, re.final_target,
+                re.actual_model, re.latency_ms AS routing_latency_ms
+         FROM messages m
+         LEFT JOIN routing_events re ON re.id = m.routing_event_id
+         WHERE m.conversation_id = ?1
+         ORDER BY m.created_at, m.rowid LIMIT ?2",
     )?;
     let rows = stmt.query_map(params![conversation_id, limit], |r| row_to_message(r))?;
     rows.collect()
@@ -708,5 +735,91 @@ mod tests {
         let all = db.get_all_settings().await.unwrap();
         assert!(all.iter().any(|(k, v)| k == "chat.temperature" && v == "0.9"));
         assert!(all.iter().any(|(k, v)| k == "custom.new" && v == "1"));
+    }
+
+    /// The message DTO carries its routing outcome (§9.2 ribbon) — joined
+    /// from routing_events via routing_event_id, None without one.
+    #[tokio::test]
+    async fn get_messages_joins_routing_event() {
+        let (_dir, db) = temp_db().await;
+        let now = crate::ids::now_ms();
+        db.create_conversation("c1".into(), now).await.unwrap();
+        db.insert_user_message("u1".into(), "c1".into(), vec![], now)
+            .await
+            .unwrap();
+        db.insert_assistant_placeholder(
+            "a1".into(),
+            "c1".into(),
+            "gemma3:12b".into(),
+            "ep_local_ollama".into(),
+            now,
+        )
+        .await
+        .unwrap();
+
+        let decision = RoutingDecision {
+            target: Target::Titan,
+            confidence: 0.91,
+            complexity: 4,
+            reason: "multi-file refactor".into(),
+            ..RoutingDecision::default()
+        };
+        db.insert_routing_event(
+            "re1".into(),
+            "c1".into(),
+            "a1".into(),
+            decision.clone(),
+            Target::Titan,
+            "gemma3:12b".into(),
+            4210,
+            None,
+        )
+        .await
+        .unwrap();
+        db.set_message_routing(
+            "a1".into(),
+            Some(ModelRole::Titan),
+            "gemma3:12b".into(),
+            "ep_local_ollama".into(),
+            Some("re1".into()),
+        )
+        .await
+        .unwrap();
+
+        let msgs = db.get_messages("c1".into()).await.unwrap();
+        assert!(msgs[0].routing.is_none(), "user message has no routing");
+        let routing = msgs[1].routing.as_ref().unwrap();
+        assert_eq!(routing.decision.target, Target::Titan);
+        assert!((routing.decision.confidence - 0.91).abs() < 1e-3);
+        assert_eq!(routing.decision.reason, "multi-file refactor");
+        assert_eq!(routing.final_target, Target::Titan);
+        assert_eq!(routing.actual_model, "gemma3:12b");
+        assert_eq!(routing.latency_ms, 4210);
+
+        // The router log reads the same rows, newest first.
+        let events = db.list_routing_events("c1".into(), 10).await.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].message_id, "a1");
+    }
+
+    /// The rolling digest lives on the conversation row and rides out in the
+    /// DTO for the router log drawer.
+    #[tokio::test]
+    async fn conversation_digest_roundtrip() {
+        let (_dir, db) = temp_db().await;
+        let now = crate::ids::now_ms();
+        let conv = db.create_conversation("c1".into(), now).await.unwrap();
+        assert!(conv.digest.is_none());
+
+        db.set_conversation_digest("c1".into(), "task: migrate auth".into())
+            .await
+            .unwrap();
+        let conv = db.get_conversation("c1".into()).await.unwrap().unwrap();
+        assert_eq!(conv.digest.as_deref(), Some("task: migrate auth"));
+        let digest = db.get_conversation_digest("c1".into()).await.unwrap();
+        assert_eq!(digest.as_deref(), Some("task: migrate auth"));
+
+        let listed = db.list_conversations().await.unwrap();
+        assert_eq!(listed[0].digest.as_deref(), Some("task: migrate auth"));
     }
 }

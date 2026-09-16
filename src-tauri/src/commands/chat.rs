@@ -8,7 +8,7 @@ use crate::{
     chat,
     error::CmdError,
     state::AppState,
-    types::{ChatSendResult, StreamEvent},
+    types::{ChatSendResult, RoutingEvent, StreamEvent},
 };
 
 #[derive(Deserialize, Debug)]
@@ -50,4 +50,14 @@ pub async fn chat_stop(
         entry.cancel.cancel();
     }
     Ok(())
+}
+
+/// Router log drawer (§9.2): recent decisions for one conversation, newest
+/// first, capped at 100.
+#[tauri::command]
+pub async fn list_routing_events(
+    state: State<'_, AppState>,
+    conversation_id: String,
+) -> Result<Vec<RoutingEvent>, CmdError> {
+    state.db.list_routing_events(conversation_id, 100).await
 }
