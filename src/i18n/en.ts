@@ -29,6 +29,31 @@ export const en = {
   "status.ok": "Connected",
   "status.down": "Offline",
   "status.unknown": "Connecting…",
+
+  "sidebar.new": "New chat",
+  "sidebar.search": "Search chats…",
+  "sidebar.untitled": "New chat",
+  "sidebar.rename": "Rename",
+  "sidebar.delete": "Delete",
+  "sidebar.deleteConfirm": "Delete this conversation? This can't be undone.",
+  "sidebar.empty": "No chats found",
+
+  "header.renameTitle": "Click to rename",
+
+  "settings.title": "Settings",
+  "settings.baseUrl": "Ollama base URL",
+  "settings.test": "Test",
+  "settings.testing": "Testing…",
+  "settings.testOk": "Endpoint reachable",
+  "settings.testFail": "Unreachable — check the URL and that Ollama is running",
+  "settings.temperature": "Temperature",
+  "settings.contextTokens": "Context tokens",
+  "settings.keepAlive": "Keep alive",
+  "settings.closeToTray": "Close to tray (keep running in background)",
+  "settings.reset": "Reset defaults",
+  "settings.saved": "Saved",
+  "settings.close": "Cancel",
+  "settings.save": "Save",
 } as const;
 
 export type I18nKey = keyof typeof en;

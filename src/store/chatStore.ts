@@ -12,6 +12,7 @@ import {
   getMessages,
   listConversations,
   listModels,
+  renameConversation as apiRenameConversation,
   sendChat,
   setConversationModel,
   stopChat,
@@ -63,6 +64,7 @@ interface ChatStore {
   refreshModels: () => Promise<void>;
   selectConversation: (id: string) => Promise<void>;
   newConversation: () => Promise<void>;
+  renameConversation: (id: string, title: string) => Promise<void>;
   deleteConversation: (id: string) => Promise<void>;
   setModel: (modelId: string) => void;
   sendMessage: (text: string) => Promise<void>;
@@ -157,6 +159,21 @@ export const useChatStore = create<ChatStore>()((set, get) => ({
         conversations: [created, ...s.conversations],
         activeId: created.id,
         messagesByConv: { ...s.messagesByConv, [created.id]: [] },
+      }));
+    } catch (e) {
+      set({ initError: String(e) });
+    }
+  },
+
+  async renameConversation(id, title) {
+    const trimmed = title.trim();
+    if (!trimmed) return;
+    try {
+      await apiRenameConversation(id, trimmed);
+      set((s) => ({
+        conversations: s.conversations.map((c) =>
+          c.id === id ? { ...c, title: trimmed } : c,
+        ),
       }));
     } catch (e) {
       set({ initError: String(e) });
