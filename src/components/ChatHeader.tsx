@@ -12,23 +12,26 @@ import { StatusChip } from "./StatusChip";
 export function ChatHeader({
   conversation,
   models,
-  model,
-  setModel,
+  pin,
+  onPin,
   connection,
   refreshModels,
   renameConversation,
   disabled,
   onOpenSettings,
+  onOpenRouterLog,
 }: {
   conversation: Conversation;
   models: ModelInfo[];
-  model: string;
-  setModel: (id: string) => void;
+  /** 'auto' | 'scout' | 'titan' | explicit model id. */
+  pin: string;
+  onPin: (value: string) => void;
   connection: ConnectionStatus;
   refreshModels: () => void;
   renameConversation: (id: string, title: string) => Promise<void>;
   disabled?: boolean;
   onOpenSettings: () => void;
+  onOpenRouterLog: () => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
@@ -73,8 +76,16 @@ export function ChatHeader({
         )}
       </div>
       <div className="flex shrink-0 items-center gap-3">
-        <ModelPicker models={models} value={model} onChange={setModel} disabled={disabled} />
+        <ModelPicker models={models} pin={pin} onPin={onPin} disabled={disabled} />
         <StatusChip status={connection} onRetry={refreshModels} />
+        <button
+          type="button"
+          onClick={onOpenRouterLog}
+          title={t("routerlog.open")}
+          className="rounded px-2 py-1 text-sm text-[color:var(--color-muted)] hover:bg-[color:var(--color-panel)] hover:text-[color:var(--color-ink)]"
+        >
+          🧭
+        </button>
         <button
           type="button"
           onClick={onOpenSettings}

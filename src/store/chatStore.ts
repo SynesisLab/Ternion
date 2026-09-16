@@ -2,6 +2,11 @@
  * Chat state (zustand). The DB is the source of truth: messages are refetched
  * after every stream resolves; token deltas live only in ephemeral `drafts`,
  * coalesced at ~30 ms so a fast stream doesn't re-render per token.
+ *
+ * M1: the per-chat selection is a Triad *pin* — 'auto' (router), 'scout',
+ * 'titan', or an explicit model id — persisted on the conversation row. The
+ * router's decision arrives as a `routing` stream event and is shown live in
+ * the composer-adjacent ribbon and, once persisted, on the message itself.
  */
 
 import { create } from "zustand";
@@ -16,7 +21,9 @@ import {
   sendChat,
   setConversationModel,
   stopChat,
+  takeSuggestions,
 } from "../lib/ipc";
+import { t } from "../i18n";
 import { newId } from "../lib/uuid";
 import type {
   ConnectionStatus,
@@ -24,11 +31,18 @@ import type {
   Message,
   ModelInfo,
 } from "../types/chat";
-import type { StatusPhase, StreamEvent } from "../types/stream";
+import type {
+  RoutingDecision,
+  StatusPhase,
+  StreamEvent,
+  Target,
+} from "../types/stream";
 
 /** One stream per conversation in M0; the draft is what the UI renders live. */
 export interface StreamDraft {
   phase: StatusPhase | null;
+  /** Router decision for this turn (§3.2), shown while it routes/streams. */
+  routing: { decision: RoutingDecision; finalTarget: Target } | null;
   text: string;
   reasoning: string;
   usage: { tokensIn: number; tokensOut: number; latencyMs: number } | null;
@@ -36,11 +50,23 @@ export interface StreamDraft {
 }
 
 function emptyDraft(): StreamDraft {
-  return { phase: null, text: "", reasoning: "", usage: null, error: null };
+  return {
+    phase: null,
+    routing: null,
+    text: "",
+    reasoning: "",
+    usage: null,
+    error: null,
+  };
 }
 
 /** Draft flush cadence (design: ~30 ms — 2 frames at 60 Hz). */
 const FLUSH_MS = 30;
+
+/** Pin values that are not explicit model ids. */
+export function isRolePin(pin: string): boolean {
+  return pin === "auto" || pin === "scout" || pin === "titan";
+}
 
 interface ChatStore {
   // data
@@ -50,12 +76,20 @@ interface ChatStore {
   messagesByConv: Record<string, Message[]>;
   models: ModelInfo[];
   connection: ConnectionStatus;
-  /** Active model id (M0: explicit per conversation). */
+  /**
+   * The active conversation's Triad pin: 'auto' | 'scout' | 'titan' | model id.
+   */
+  pin: string;
+  /** Last explicitly chosen model — the M0 fallback when the router is off. */
   model: string;
 
   // streaming
   drafts: Record<string, StreamDraft>;
   streaming: Record<string, boolean>;
+  /** Scout ran past its output ceiling last turn (§3.6) — offer ⚡ continue. */
+  escalation: Record<string, boolean>;
+  /** Follow-up chips from the Herald sidecar (§3.7), per conversation. */
+  suggestions: Record<string, string[]>;
 
   initError: string | null;
 
@@ -66,8 +100,13 @@ interface ChatStore {
   newConversation: () => Promise<void>;
   renameConversation: (id: string, title: string) => Promise<void>;
   deleteConversation: (id: string) => Promise<void>;
+  /** Pin change: 'auto' | 'scout' | 'titan' | explicit model id. */
+  setPin: (value: string) => void;
+  /** Explicit model fallback (M0-style picker selection). */
   setModel: (modelId: string) => void;
   sendMessage: (text: string) => Promise<void>;
+  /** ⚡ Continue with Titan (§3.6): pins titan, asks for the rest of the answer. */
+  continueWithTitan: () => Promise<void>;
   stop: () => Promise<void>;
   applyStreamEvent: (conversationId: string, ev: StreamEvent) => void;
   refreshMessages: (conversationId: string) => Promise<void>;
@@ -79,10 +118,13 @@ export const useChatStore = create<ChatStore>()((set, get) => ({
   messagesByConv: {},
   models: [],
   connection: "unknown",
+  pin: "auto",
   model: "",
 
   drafts: {},
   streaming: {},
+  escalation: {},
+  suggestions: {},
 
   initError: null,
 
@@ -99,18 +141,23 @@ export const useChatStore = create<ChatStore>()((set, get) => ({
       const messages = await getMessages(activeId);
       try {
         const models = await listModels();
-        set((s) => ({
-          conversations: next,
-          activeId,
-          messagesByConv: { [activeId as string]: messages },
-          models,
-          connection: "ok",
-          model:
-            next.find((c) => c.id === activeId)?.pinnedModel ||
-            s.model ||
-            models[0]?.id ||
-            "",
-        }));
+        set((s) => {
+          const active = next.find((c) => c.id === activeId);
+          const pinned = active?.pinnedModel;
+          return {
+            conversations: next,
+            activeId,
+            messagesByConv: { [activeId as string]: messages },
+            models,
+            connection: "ok",
+            pin: pinned ?? "auto",
+            model:
+              (pinned && !isRolePin(pinned) ? pinned : null) ||
+              s.model ||
+              models[0]?.id ||
+              "",
+          };
+        });
       } catch {
         // Reachable core, unreachable endpoint — chat stays disabled.
         set({
@@ -149,7 +196,13 @@ export const useChatStore = create<ChatStore>()((set, get) => ({
       }));
     }
     const conv = get().conversations.find((c) => c.id === id);
-    if (conv?.pinnedModel) set({ model: conv.pinnedModel });
+    const pinned = conv?.pinnedModel;
+    set({
+      pin: pinned ?? "auto",
+      ...(pinned && !isRolePin(pinned) ? { model: pinned } : {}),
+    });
+    // Clear per-chat overlays from the previous conversation.
+    set({ escalation: {}, suggestions: {} });
   },
 
   async newConversation() {
@@ -159,6 +212,9 @@ export const useChatStore = create<ChatStore>()((set, get) => ({
         conversations: [created, ...s.conversations],
         activeId: created.id,
         messagesByConv: { ...s.messagesByConv, [created.id]: [] },
+        pin: "auto",
+        escalation: {},
+        suggestions: {},
       }));
     } catch (e) {
       set({ initError: String(e) });
@@ -210,8 +266,17 @@ export const useChatStore = create<ChatStore>()((set, get) => ({
     }
   },
 
+  setPin(value) {
+    set({ pin: value });
+    if (!isRolePin(value)) set({ model: value });
+    const { activeId } = get();
+    if (activeId) {
+      setConversationModel(activeId, value).catch(() => {});
+    }
+  },
+
   setModel(modelId) {
-    set({ model: modelId });
+    set({ model: modelId, pin: modelId });
     const { activeId } = get();
     if (activeId) {
       setConversationModel(activeId, modelId).catch(() => {});
@@ -220,8 +285,13 @@ export const useChatStore = create<ChatStore>()((set, get) => ({
 
   async sendMessage(text) {
     const trimmed = text.trim();
-    const { activeId, model, streaming } = get();
-    if (!activeId || !trimmed || !model || streaming[activeId]) return;
+    const { activeId, pin, model, models, streaming } = get();
+    if (!activeId || !trimmed || streaming[activeId]) return;
+
+    // Explicit pin wins; otherwise the last explicit model is the fallback
+    // the router needs when the Triad is off (M0 behavior).
+    const fallback = (!isRolePin(pin) && pin) || model || models[0]?.id || "";
+    if (!fallback) return;
 
     const convId = activeId;
     const userMessageId = newId();
@@ -241,6 +311,7 @@ export const useChatStore = create<ChatStore>()((set, get) => ({
       status: "complete",
       error: null,
       createdAt: now,
+      routing: null,
     };
     const placeholder: Message = {
       ...userMessage,
@@ -258,12 +329,15 @@ export const useChatStore = create<ChatStore>()((set, get) => ({
       },
       drafts: { ...s.drafts, [convId]: emptyDraft() },
       streaming: { ...s.streaming, [convId]: true },
+      // One-shot overlays are void the moment a new exchange starts.
+      escalation: { ...s.escalation, [convId]: false },
+      suggestions: { ...s.suggestions, [convId]: [] },
     }));
 
     try {
       // Resolves when the stream ends; deltas arrive through the Channel.
       await sendChat(
-        { conversationId: convId, userMessageId, content: trimmed, model },
+        { conversationId: convId, userMessageId, content: trimmed, model: fallback },
         (ev) => get().applyStreamEvent(convId, ev),
       );
     } catch (e) {
@@ -287,11 +361,24 @@ export const useChatStore = create<ChatStore>()((set, get) => ({
     }
 
     set((s) => ({
-      messagesByConv: { ...s.messagesByConv, [convId]: [] },
       drafts: withoutDraft(s.drafts, convId),
       streaming: withoutStream(s.streaming, convId),
     }));
     await get().refreshMessages(convId);
+
+    // Sidecars: follow-up chips land out-of-band (§3.7), a second or two
+    // after the stream — poll a few times before giving up (empty is also a
+    // valid state: chips can be off or Herald may have failed). A newer send
+    // on the same conversation owns the overlay, so older polls stop short.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const suggestions = await takeSuggestions(convId).catch(() => [] as string[]);
+      if (get().streaming[convId]) return; // a newer send owns the cache now
+      set((s) => ({
+        suggestions: { ...s.suggestions, [convId]: suggestions },
+      }));
+      if (suggestions.length > 0) break;
+      await new Promise((r) => setTimeout(r, 1000));
+    }
 
     // Auto-title / updated_at changed ordering — refresh the sidebar data.
     try {
@@ -300,6 +387,15 @@ export const useChatStore = create<ChatStore>()((set, get) => ({
     } catch {
       /* non-fatal */
     }
+  },
+
+  async continueWithTitan() {
+    const { activeId, escalation, streaming } = get();
+    if (!activeId || !escalation[activeId] || streaming[activeId]) return;
+    // Escalation is a user-visible pin change (§3.10) — the chip reflects it,
+    // and switching back to Auto is one click.
+    get().setPin("titan");
+    await get().sendMessage(t("chat.escalation.continuePrompt"));
   },
 
   async stop() {
@@ -331,6 +427,18 @@ export const useChatStore = create<ChatStore>()((set, get) => ({
             [conversationId]: {
               ...(s.drafts[conversationId] ?? emptyDraft()),
               phase: ev.phase,
+            },
+          },
+        }));
+        break;
+      }
+      case "routing": {
+        set((s) => ({
+          drafts: {
+            ...s.drafts,
+            [conversationId]: {
+              ...(s.drafts[conversationId] ?? emptyDraft()),
+              routing: { decision: ev.decision, finalTarget: ev.finalTarget },
             },
           },
         }));
@@ -374,7 +482,7 @@ export const useChatStore = create<ChatStore>()((set, get) => ({
         // Invoke resolves right after; the finalize path refetches from DB.
         break;
       default:
-        // routing (M1) / tool_call_* (M2) — intentionally ignored in M0.
+        // tool_call_* (M2) — intentionally ignored until that milestone.
         break;
     }
   },

@@ -5,6 +5,7 @@ import type {
   Conversation,
   Message,
   ModelInfo,
+  RoutingEvent,
 } from "../types/chat";
 import type { StreamEvent } from "../types/stream";
 
@@ -46,6 +47,18 @@ export function sendChat(
 
 export function stopChat(conversationId: string): Promise<void> {
   return invoke("chat_stop", { conversationId });
+}
+
+/** Router log drawer (§9.2): recent decisions, newest first. */
+export function listRoutingEvents(
+  conversationId: string,
+): Promise<RoutingEvent[]> {
+  return invoke<RoutingEvent[]>("list_routing_events", { conversationId });
+}
+
+/** Follow-up chips (§3.7): returns and clears the cached set. */
+export function takeSuggestions(conversationId: string): Promise<string[]> {
+  return invoke<string[]>("take_suggestions", { conversationId });
 }
 
 // -- Conversations --------------------------------------------------------

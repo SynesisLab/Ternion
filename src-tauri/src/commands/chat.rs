@@ -61,3 +61,13 @@ pub async fn list_routing_events(
 ) -> Result<Vec<RoutingEvent>, CmdError> {
     state.db.list_routing_events(conversation_id, 100).await
 }
+
+/// Follow-up suggestion chips (§3.7): returns and clears the set the Herald
+/// sidecar produced for the last exchange (empty until it lands).
+#[tauri::command]
+pub async fn take_suggestions(
+    state: State<'_, AppState>,
+    conversation_id: String,
+) -> Result<Vec<String>, CmdError> {
+    Ok(state.take_suggestions(&conversation_id))
+}

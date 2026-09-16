@@ -4,6 +4,7 @@ import { formatLatency, formatTokens } from "../lib/format";
 import { t } from "../i18n";
 import type { Message } from "../types/chat";
 import { Markdown } from "./Markdown";
+import { RoutingRibbon } from "./RoutingRibbon";
 import { ThinkingBlock } from "./ThinkingBlock";
 
 function textOf(message: Message): string {
@@ -15,8 +16,11 @@ function textOf(message: Message): string {
 
 export const MessageBubble = memo(function MessageBubble({
   message,
+  switched = false,
 }: {
   message: Message;
+  /** Precomputed by the list: this turn ran on a different model. */
+  switched?: boolean;
 }) {
   if (message.role === "user") {
     return (
@@ -37,6 +41,14 @@ export const MessageBubble = memo(function MessageBubble({
 
   return (
     <div className="max-w-[85%] space-y-2">
+      {message.routing && (
+        <RoutingRibbon
+          decision={message.routing.decision}
+          finalTarget={message.routing.finalTarget}
+          latencyMs={message.routing.latencyMs}
+          switched={switched}
+        />
+      )}
       {message.reasoning && (
         <ThinkingBlock
           text={message.reasoning}

@@ -1,6 +1,14 @@
 /** IPC DTOs — must mirror the serde structs in src-tauri/src/types.rs. */
 
+import type { RoutingDecision, Target } from "./stream";
+
 export type ConnectionStatus = "ok" | "down" | "unknown";
+
+/**
+ * The Triad pin on a conversation (§3.10): 'auto' routes through Herald,
+ * 'scout'/'titan' force a role, any other value pins an explicit model.
+ */
+export type PinValue = "auto" | "scout" | "titan";
 
 export type ChatRole = "system" | "user" | "assistant" | "tool";
 export type MessageStatus = "streaming" | "complete" | "stopped" | "error";
@@ -19,11 +27,21 @@ export interface Conversation {
   title: string | null;
   createdAt: number;
   updatedAt: number;
-  /** M0: null → default model, else the explicit model id chosen per chat. */
+  /** 'auto' | 'scout' | 'titan' | explicit model id | null (= 'auto'). */
   pinnedModel: string | null;
   workspaceRoots: string[];
   systemPrompt: string | null;
   archived: boolean;
+  /** Rolling digest maintained by the Herald sidecar (§3.6). */
+  digest: string | null;
+}
+
+/** Routing outcome joined onto a message (design §9.2 ribbon data). */
+export interface MessageRouting {
+  decision: RoutingDecision;
+  finalTarget: Target;
+  actualModel: string;
+  latencyMs: number;
 }
 
 export interface Message {
@@ -41,6 +59,8 @@ export interface Message {
   status: MessageStatus;
   error: string | null;
   createdAt: number;
+  /** Router decision behind an assistant message; null for user messages. */
+  routing: MessageRouting | null;
 }
 
 /** Result of a finished `chat_send` invocation. */
@@ -50,6 +70,22 @@ export interface ChatSendResult {
   tokensIn: number;
   tokensOut: number;
   latencyMs: number;
+  /** Scout ran past its output ceiling — the UI offers "Continue with Titan". */
+  escalationAvailable: boolean;
+}
+
+/** One persisted router decision (router log drawer, design §9.2). */
+export interface RoutingEvent {
+  id: string;
+  ts: number;
+  conversationId: string;
+  messageId: string;
+  decision: RoutingDecision;
+  finalTarget: Target;
+  actualModel: string;
+  latencyMs: number;
+  /** "manual" when a user pin chose the model; null for router decisions. */
+  overrideKind: string | null;
 }
 
 export interface ModelInfo {

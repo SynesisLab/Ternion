@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { ChatHeader } from "./components/ChatHeader";
 import { Composer } from "./components/Composer";
 import { MessageList } from "./components/MessageList";
+import { RouterLog } from "./components/RouterLog";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { Sidebar } from "./components/Sidebar";
 import { useChatStore } from "./store/chatStore";
@@ -13,19 +14,27 @@ export default function App() {
   const conversations = useChatStore((s) => s.conversations);
   const activeId = useChatStore((s) => s.activeId);
   const models = useChatStore((s) => s.models);
-  const model = useChatStore((s) => s.model);
-  const setModel = useChatStore((s) => s.setModel);
+  const pin = useChatStore((s) => s.pin);
+  const setPin = useChatStore((s) => s.setPin);
   const connection = useChatStore((s) => s.connection);
   const refreshModels = useChatStore((s) => s.refreshModels);
   const renameConversation = useChatStore((s) => s.renameConversation);
   const newConversation = useChatStore((s) => s.newConversation);
   const sendMessage = useChatStore((s) => s.sendMessage);
+  const continueWithTitan = useChatStore((s) => s.continueWithTitan);
   const stop = useChatStore((s) => s.stop);
   const initError = useChatStore((s) => s.initError);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [routerLogOpen, setRouterLogOpen] = useState(false);
   const streaming = useChatStore(
     (s) => (activeId ? (s.streaming[activeId] ?? false) : false),
+  );
+  const escalation = useChatStore(
+    (s) => (activeId ? (s.escalation[activeId] ?? false) : false),
+  );
+  const suggestions = useChatStore(
+    (s) => (activeId ? (s.suggestions[activeId] ?? []) : []),
   );
 
   useEffect(() => {
@@ -59,24 +68,34 @@ export default function App() {
         <ChatHeader
           conversation={active}
           models={models}
-          model={model}
-          setModel={setModel}
+          pin={pin}
+          onPin={setPin}
           connection={connection}
           refreshModels={() => void refreshModels()}
           renameConversation={renameConversation}
           disabled={streaming}
           onOpenSettings={() => setSettingsOpen(true)}
+          onOpenRouterLog={() => setRouterLogOpen(true)}
         />
         <MessageList conversationId={active.id} />
         <Composer
           onSend={sendMessage}
           onStop={() => void stop()}
           streaming={streaming}
-          disabled={models.length === 0 || model === ""}
+          disabled={models.length === 0}
           offline={connection === "down"}
+          suggestions={suggestions}
+          onSuggestion={(text) => void sendMessage(text)}
+          escalation={escalation}
+          onContinueTitan={() => void continueWithTitan()}
         />
       </div>
       <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <RouterLog
+        open={routerLogOpen}
+        conversationId={activeId}
+        onClose={() => setRouterLogOpen(false)}
+      />
     </div>
   );
 }

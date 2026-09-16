@@ -3,6 +3,7 @@ import { t } from "../i18n";
 import { useChatStore, type StreamDraft } from "../store/chatStore";
 import { Markdown } from "./Markdown";
 import { MessageBubble } from "./MessageBubble";
+import { RoutingRibbon } from "./RoutingRibbon";
 import { ThinkingBlock } from "./ThinkingBlock";
 
 const PHASE_LABELS = {
@@ -16,6 +17,12 @@ function LiveBubble({ draft }: { draft: StreamDraft }) {
   const blank = draft.text.length === 0 && draft.reasoning.length === 0;
   return (
     <div className="max-w-[85%] space-y-2">
+      {draft.routing && (
+        <RoutingRibbon
+          decision={draft.routing.decision}
+          finalTarget={draft.routing.finalTarget}
+        />
+      )}
       {draft.reasoning && <ThinkingBlock text={draft.reasoning} active />}
       {draft.text.length > 0 ? (
         <div className="prose prose-invert prose-sm max-w-none break-words text-[color:var(--color-ink)] prose-pre:bg-[#0d1017] prose-code:before:hidden prose-code:after:hidden">
@@ -56,12 +63,26 @@ export function MessageList({ conversationId }: { conversationId: string }) {
     <div ref={ref} className="flex-1 overflow-y-auto">
       <div className="mx-auto flex max-w-3xl flex-col gap-5 px-6 py-6">
         {messages.length === 0 && !streaming && <EmptyState />}
-        {messages.map((m) => (
-          <MessageBubble
-            key={m.id === "streaming" ? `stub-${m.createdAt}` : m.id}
-            message={m}
-          />
-        ))}
+        {messages.map((m, i) => {
+          // ⚡ switch marker (§9.1): the previous assistant turn ran on a
+          // different model than this one.
+          const prevAssistant = [...messages.slice(0, i)]
+            .reverse()
+            .find((p) => p.role === "assistant");
+          const switched =
+            m.role === "assistant" &&
+            m.routing != null &&
+            prevAssistant?.modelId != null &&
+            m.modelId != null &&
+            prevAssistant.modelId !== m.modelId;
+          return (
+            <MessageBubble
+              key={m.id === "streaming" ? `stub-${m.createdAt}` : m.id}
+              message={m}
+              switched={switched}
+            />
+          );
+        })}
         {streaming && draft && <LiveBubble draft={draft} />}
       </div>
     </div>
