@@ -58,7 +58,7 @@ Produces an NSIS installer under `src-tauri/target/release/bundle/nsis/`
 
 ```sh
 cd src-tauri
-cargo test            # 29 unit tests — no Ollama needed
+cargo test            # unit tests — no Ollama needed
 cargo test -- --ignored   # live probes against a running Ollama
 ```
 
