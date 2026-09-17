@@ -171,6 +171,11 @@ export const en = {
   "settings.triad.scoutOutputCeiling": "Scout output ceiling (tokens)",
   "settings.triad.handoffRecentMessages": "Handoff recent messages",
   "settings.triad.heraldTimeoutMs": "Herald timeout (ms)",
+  "settings.triad.routingGuidance": "Routing guidance",
+  "settings.triad.routingGuidancePlaceholder":
+    "e.g. code reviews and anything about the billing service → Titan;\nquick lookups and rewrites → Scout",
+  "settings.triad.routingGuidanceHint":
+    "Extra instructions for the router (Herald) describing what kind of scenario should use which model. Appended after the default routing rules — your text wins when they conflict. Max 2000 characters.",
   "settings.triad.sidecars": "Sidecar tasks (Herald)",
   "settings.triad.sidecarTitles": "Refine chat titles",
   "settings.triad.sidecarSuggestions": "Suggest follow-up messages",

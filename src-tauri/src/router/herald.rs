@@ -95,6 +95,31 @@ pub struct ClassifyInput<'a> {
     pub latest_message: &'a str,
     /// Whether Titan is currently warm for this thread (affects continuity).
     pub sticky_on_titan: bool,
+    /// Free-form user guidance (Settings → Triad) appended to the system
+    /// prompt; empty = the stock Appendix B prompt only.
+    pub routing_guidance: &'a str,
+}
+
+/// User guidance is appended to the system prompt after this line — last
+/// position wins when it conflicts with the stock rules above it.
+pub const GUIDANCE_HEADER: &str = "Additional routing guidance from the user (overrides the defaults above when they conflict):";
+
+/// The user's guidance is untrusted free text riding on a structured-output
+/// prompt — keep it bounded so a pasted novel can't bloat every classify call.
+pub const GUIDANCE_MAX_CHARS: usize = 2000;
+
+fn clamp_guidance(guidance: &str) -> String {
+    guidance.trim().chars().take(GUIDANCE_MAX_CHARS).collect()
+}
+
+/// The system prompt for one classify call: the stock Appendix B prompt,
+/// optionally followed by the user's routing guidance.
+fn system_prompt(guidance: &str) -> String {
+    let guidance = clamp_guidance(guidance);
+    if guidance.is_empty() {
+        return HERALD_SYSTEM.to_string();
+    }
+    format!("{HERALD_SYSTEM}\n\n{GUIDANCE_HEADER}\n{guidance}")
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -147,7 +172,7 @@ pub fn build_classify_request(herald_model: &str, input: &ClassifyInput<'_>, kee
     messages.push(ChatMessage {
         id: String::new(),
         role: ChatRole::System,
-        content: ChatContent::Text(HERALD_SYSTEM.into()),
+        content: ChatContent::Text(system_prompt(input.routing_guidance).into()),
         tool_calls: None,
         tool_call_id: None,
         tool_name: None,
@@ -462,6 +487,7 @@ mod tests {
             }],
             latest_message: "what is 15% of 82?",
             sticky_on_titan: false,
+            routing_guidance: "",
         };
         let req = build_classify_request("lfm2.5", &input, "24h");
         assert_eq!(req.model, "lfm2.5");
@@ -472,6 +498,75 @@ mod tests {
         // system + 8 few-shot pairs + real input
         assert_eq!(req.messages.len(), 2 + FEW_SHOTS.len() * 2);
         assert!(matches!(req.messages.last().unwrap().role, ChatRole::User));
+    }
+
+    #[test]
+    fn guidance_appended_to_system_prompt() {
+        let input = ClassifyInput {
+            history_tail: &[],
+            latest_message: "hey",
+            sticky_on_titan: false,
+            routing_guidance: "  long documents → titan, everything else → scout  ",
+        };
+        let req = build_classify_request("lfm2.5", &input, "24h");
+        let system = match &req.messages[0].content {
+            ChatContent::Text(t) => t.clone(),
+            ChatContent::Parts(_) => panic!("system message must be text"),
+        };
+        // Stock prompt is still the base; the guidance rides after it, last
+        // so it wins conflicts, and the raw (untrimmed) copy is gone.
+        assert!(system.starts_with(HERALD_SYSTEM));
+        assert!(system.contains(GUIDANCE_HEADER));
+        assert!(system.contains("long documents → titan, everything else → scout"));
+        assert!(!system.contains("  long documents"));
+        // The few-shot pairing and the real input are untouched.
+        assert_eq!(req.messages.len(), 2 + FEW_SHOTS.len() * 2);
+    }
+
+    #[test]
+    fn guidance_empty_is_absent_and_clamped() {
+        // Whitespace-only guidance behaves as none.
+        let blank = build_classify_request(
+            "lfm2.5",
+            &ClassifyInput {
+                history_tail: &[],
+                latest_message: "hey",
+                sticky_on_titan: false,
+                routing_guidance: "   \n\t ",
+            },
+            "24h",
+        );
+        let system = match &blank.messages[0].content {
+            ChatContent::Text(t) => t.clone(),
+            ChatContent::Parts(_) => panic!("system message must be text"),
+        };
+        assert_eq!(system, HERALD_SYSTEM);
+        assert!(!system.contains(GUIDANCE_HEADER));
+
+        // A pasted novel is clamped to GUIDANCE_MAX_CHARS.
+        let long = "x".repeat(GUIDANCE_MAX_CHARS + 500);
+        let clamped = build_classify_request(
+            "lfm2.5",
+            &ClassifyInput {
+                history_tail: &[],
+                latest_message: "hey",
+                sticky_on_titan: false,
+                routing_guidance: &long,
+            },
+            "24h",
+        );
+        let system = match &clamped.messages[0].content {
+            ChatContent::Text(t) => t.clone(),
+            ChatContent::Parts(_) => panic!("system message must be text"),
+        };
+        let guidance_body = system.split(GUIDANCE_HEADER).nth(1).unwrap_or_default();
+        let occurrences = guidance_body.chars().filter(|c| *c == 'x').count();
+        assert_eq!(
+            occurrences,
+            GUIDANCE_MAX_CHARS,
+            "guidance truncated, stock prompt intact"
+        );
+        assert!(system.starts_with(HERALD_SYSTEM));
     }
 
     #[test]
@@ -488,6 +583,7 @@ mod tests {
             }],
             latest_message: "hi",
             sticky_on_titan: true,
+            routing_guidance: "",
         };
         let rendered = render_input(&input);
         assert!(rendered.contains("running on titan"));
@@ -502,6 +598,7 @@ mod tests {
             history_tail: &[],
             latest_message: "hey",
             sticky_on_titan: false,
+            routing_guidance: "",
         };
         let (d, latency) = classify(&provider, "lfm2.5", &input, 1000, "24h", &CancellationToken::new())
             .await
@@ -517,6 +614,7 @@ mod tests {
             history_tail: &[],
             latest_message: "hey",
             sticky_on_titan: false,
+            routing_guidance: "",
         };
         let err = classify(&provider, "lfm2.5", &input, 30, "24h", &CancellationToken::new())
             .await
@@ -535,6 +633,7 @@ mod tests {
             history_tail: &[],
             latest_message: "hey",
             sticky_on_titan: false,
+            routing_guidance: "",
         };
         let err = classify(&provider, "missing:model", &input, 1000, "24h", &CancellationToken::new())
             .await
@@ -565,6 +664,7 @@ mod tests {
             history_tail: &[],
             latest_message: "Refactor the auth module to use refresh tokens across 5 files",
             sticky_on_titan: false,
+            routing_guidance: "",
         };
         let (d, ms) = classify(&adapter, &model, &input, 8000, "24h", &CancellationToken::new())
             .await

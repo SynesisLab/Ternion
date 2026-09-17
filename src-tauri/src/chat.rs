@@ -1465,6 +1465,7 @@ async fn route_turn(
                             history_tail: &tail,
                             latest_message: &args.content,
                             sticky_on_titan: turns_on_titan > 0,
+                            routing_guidance: &cfg.routing_guidance,
                         };
                         match herald::classify(
                             provider.as_ref(),

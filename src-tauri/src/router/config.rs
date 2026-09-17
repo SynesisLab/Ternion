@@ -75,6 +75,10 @@ pub struct TriadConfig {
     pub sidecar_titles: bool,
     pub sidecar_suggestions: bool,
     pub herald_timeout_ms: u64,
+    /// Free-form user guidance appended to the Herald classify prompt
+    /// (§3.3): "code reviews → titan, quick lookups → scout", etc. Empty
+    /// string = none; trimmed at load.
+    pub routing_guidance: String,
     pub herald_keep_alive: String,
     pub scout_keep_alive: String,
     pub titan_keep_alive: String,
@@ -105,6 +109,7 @@ impl Default for TriadConfig {
             // Generous: Herald is keep-alive-pinned so warm calls land well
             // under this; the timeout only bites on cold loads or a down model.
             herald_timeout_ms: 8000,
+            routing_guidance: String::new(),
             herald_keep_alive: "24h".into(),
             scout_keep_alive: "10m".into(),
             titan_keep_alive: "3m".into(),
@@ -180,6 +185,9 @@ impl TriadConfig {
         if let Some(v) = get(keys::TRIAD_HERALD_TIMEOUT_MS).and_then(parse_u32) {
             cfg.herald_timeout_ms = u64::from(v);
         }
+        cfg.routing_guidance = get(keys::TRIAD_ROUTING_GUIDANCE)
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
         if let Some(v) = non_empty(get(keys::HERALD_KEEP_ALIVE)) {
             cfg.herald_keep_alive = v;
         }
@@ -226,6 +234,7 @@ fn snapshot(settings: &SettingsCache) -> HashMap<String, String> {
         keys::TRIAD_SIDECAR_TITLES,
         keys::TRIAD_SIDECAR_SUGGESTIONS,
         keys::TRIAD_HERALD_TIMEOUT_MS,
+        keys::TRIAD_ROUTING_GUIDANCE,
         keys::HERALD_KEEP_ALIVE,
         keys::TRIAD_SCOUT_KEEP_ALIVE,
         keys::TRIAD_TITAN_KEEP_ALIVE,
@@ -300,6 +309,7 @@ mod tests {
         assert_eq!(cfg.handoff_recent_messages, 6);
         assert!(cfg.sidecar_titles && cfg.sidecar_suggestions);
         assert_eq!(cfg.herald_timeout_ms, 8000);
+        assert_eq!(cfg.routing_guidance, "");
         assert_eq!(cfg.herald_keep_alive, "24h");
         assert_eq!(cfg.scout_keep_alive, "10m");
         assert_eq!(cfg.titan_keep_alive, "3m");
@@ -316,6 +326,7 @@ mod tests {
             ("triad.sticky_turns", "3"),
             ("triad.enabled", "false"),
             ("triad.skip_router", "true"),
+            ("triad.routing_guidance", "  code reviews → titan  "),
         ]));
         assert!(!cfg.enabled);
         assert!(cfg.skip_router);
@@ -324,6 +335,7 @@ mod tests {
         assert_eq!(cfg.roles.titan, None);
         assert!((cfg.min_confidence - 0.5).abs() < 1e-6);
         assert_eq!(cfg.sticky_turns, 3);
+        assert_eq!(cfg.routing_guidance, "code reviews → titan");
     }
 
     #[test]

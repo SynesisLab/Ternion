@@ -37,6 +37,9 @@ pub mod keys {
     pub const TRIAD_SIDECAR_TITLES: &str = "triad.sidecar_titles";
     pub const TRIAD_SIDECAR_SUGGESTIONS: &str = "triad.sidecar_suggestions";
     pub const TRIAD_HERALD_TIMEOUT_MS: &str = "triad.herald_timeout_ms";
+    /// Free-form text appended to the Herald classify prompt — the user's
+    /// own "what kind of scenario should use what model" guidance.
+    pub const TRIAD_ROUTING_GUIDANCE: &str = "triad.routing_guidance";
     pub const HERALD_KEEP_ALIVE: &str = "herald.keep_alive";
     pub const TRIAD_SCOUT_KEEP_ALIVE: &str = "triad.scout_keep_alive";
     pub const TRIAD_TITAN_KEEP_ALIVE: &str = "triad.titan_keep_alive";

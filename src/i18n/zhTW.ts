@@ -176,6 +176,11 @@ export const zhTW: Record<I18nKey, string> = {
   "settings.triad.scoutOutputCeiling": "Scout 輸出上限（tokens）",
   "settings.triad.handoffRecentMessages": "交接近期訊息數",
   "settings.triad.heraldTimeoutMs": "Herald 逾時（ms）",
+  "settings.triad.routingGuidance": "路由指引",
+  "settings.triad.routingGuidancePlaceholder":
+    "例如：程式碼審查與帳務服務相關 → Titan；\n快速查詢與改寫 → Scout",
+  "settings.triad.routingGuidanceHint":
+    "給路由器（Herald）的額外指示，說明哪類情境應使用哪個模型。會附加在預設路由規則之後 — 衝突時以您的文字為準。上限 2000 字元。",
   "settings.triad.sidecars": "附屬任務（Herald）",
   "settings.triad.sidecarTitles": "精修對話標題",
   "settings.triad.sidecarSuggestions": "建議後續訊息",

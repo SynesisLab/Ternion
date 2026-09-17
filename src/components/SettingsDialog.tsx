@@ -96,6 +96,7 @@ export function SettingsDialog({
   const [scoutCeiling, setScoutCeiling] = useState(DEFAULT_SCOUT_CEILING);
   const [handoffRecent, setHandoffRecent] = useState(DEFAULT_HANDOFF_RECENT);
   const [heraldTimeout, setHeraldTimeout] = useState(DEFAULT_HERALD_TIMEOUT);
+  const [routingGuidance, setRoutingGuidance] = useState("");
   const [sidecarTitles, setSidecarTitles] = useState(true);
   const [sidecarSuggestions, setSidecarSuggestions] = useState(true);
   const [adaptiveEnabled, setAdaptiveEnabled] = useState(false);
@@ -152,6 +153,7 @@ export function SettingsDialog({
         getSetting(k.triadScoutOutputCeiling),
         getSetting(k.triadHandoffRecentMessages),
         getSetting(k.triadHeraldTimeoutMs),
+        getSetting(k.triadRoutingGuidance),
         getSetting(k.triadSidecarTitles),
         getSetting(k.triadSidecarSuggestions),
         getSetting(k.triadAdaptiveEnabled),
@@ -167,9 +169,10 @@ export function SettingsDialog({
       setScoutCeiling(triad[8] ?? DEFAULT_SCOUT_CEILING);
       setHandoffRecent(triad[9] ?? DEFAULT_HANDOFF_RECENT);
       setHeraldTimeout(triad[10] ?? DEFAULT_HERALD_TIMEOUT);
-      setSidecarTitles((triad[11] ?? "true") !== "false");
-      setSidecarSuggestions((triad[12] ?? "true") !== "false");
-      setAdaptiveEnabled(triad[13] === "true");
+      setRoutingGuidance(triad[11] ?? "");
+      setSidecarTitles((triad[12] ?? "true") !== "false");
+      setSidecarSuggestions((triad[13] ?? "true") !== "false");
+      setAdaptiveEnabled(triad[14] === "true");
     })();
   }, [open]);
 
@@ -196,6 +199,7 @@ export function SettingsDialog({
     setScoutCeiling(DEFAULT_SCOUT_CEILING);
     setHandoffRecent(DEFAULT_HANDOFF_RECENT);
     setHeraldTimeout(DEFAULT_HERALD_TIMEOUT);
+    setRoutingGuidance("");
     setSidecarTitles(true);
     setSidecarSuggestions(true);
     setAdaptiveEnabled(false);
@@ -244,6 +248,7 @@ export function SettingsDialog({
         handoffRecent.trim() || DEFAULT_HANDOFF_RECENT,
       ),
       setSetting(k.triadHeraldTimeoutMs, heraldTimeout.trim() || DEFAULT_HERALD_TIMEOUT),
+      setSetting(k.triadRoutingGuidance, routingGuidance.trim()),
       setSetting(k.triadSidecarTitles, String(sidecarTitles)),
       setSetting(k.triadSidecarSuggestions, String(sidecarSuggestions)),
       setSetting(k.triadAdaptiveEnabled, String(adaptiveEnabled)),
@@ -494,6 +499,23 @@ export function SettingsDialog({
                   value={roleTitan}
                   onChange={setRoleTitan}
                 />
+              </div>
+            </div>
+
+            {/* §3.3 user routing guidance — appended to the Herald prompt */}
+            <div>
+              <div className="mb-1.5 text-xs font-medium text-[color:var(--color-muted)]">
+                {t("settings.triad.routingGuidance")}
+              </div>
+              <textarea
+                value={routingGuidance}
+                onChange={(e) => setRoutingGuidance(e.target.value)}
+                rows={4}
+                placeholder={t("settings.triad.routingGuidancePlaceholder")}
+                className="w-full resize-y rounded-lg border border-[color:var(--color-edge)] bg-[color:var(--color-bg)] px-2.5 py-1.5 text-xs text-[color:var(--color-ink)] outline-none focus:border-[color:var(--color-accent)]"
+              />
+              <div className="mt-1 text-xs text-[color:var(--color-muted)]">
+                {t("settings.triad.routingGuidanceHint")}
               </div>
             </div>
 

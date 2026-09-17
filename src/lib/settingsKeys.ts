@@ -28,6 +28,7 @@ export const settingsKeys = {
   triadSidecarTitles: "triad.sidecar_titles",
   triadSidecarSuggestions: "triad.sidecar_suggestions",
   triadHeraldTimeoutMs: "triad.herald_timeout_ms",
+  triadRoutingGuidance: "triad.routing_guidance",
   triadAdaptiveEnabled: "triad.adaptive.enabled",
   heraldKeepAlive: "herald.keep_alive",
   triadScoutKeepAlive: "triad.scout_keep_alive",
