@@ -122,6 +122,17 @@ export function captureRegion(args: {
   return invoke<Attachment>("capture_region", { args });
 }
 
+/** §9.3: start a region capture on behalf of a window ("main" | "quick") —
+ * the stored attachment is announced to that window's composer. */
+export function startCapture(target: string): Promise<void> {
+  return invoke("start_capture", { target });
+}
+
+/** §9.3: surface the main window and select a conversation there. */
+export function openInMain(conversationId: string): Promise<void> {
+  return invoke("open_in_main", { conversationId });
+}
+
 /** Router log drawer (§9.2): recent decisions, newest first. */
 export function listRoutingEvents(
   conversationId: string,

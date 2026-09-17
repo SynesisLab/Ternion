@@ -36,6 +36,9 @@ pub struct AppState {
     /// Directory for attachment file bodies (§7.2/§8.1):
     /// `%APPDATA%\Ternion\attachments\` in production, a temp dir in tests.
     pub attachments_dir: std::path::PathBuf,
+    /// Which window initiated the current §7.1 region capture ("main" or
+    /// "quick") — `capture_region` announces the stored attachment there.
+    pub capture_target: RwLock<String>,
 }
 
 /// Cancellation entry for an in-flight stream.
@@ -65,6 +68,7 @@ impl AppState {
             session_grants: AsyncMutex::new(permissions::SessionGrants::default()),
             providers: RwLock::new(providers),
             attachments_dir,
+            capture_target: RwLock::new("main".to_string()),
         }
     }
 

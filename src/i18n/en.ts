@@ -160,6 +160,13 @@ export const en = {
     "Pins that contradict the router nudge that message class's escalation threshold. Shown in the report.",
   "settings.triad.reportAdaptiveOff": "adaptive tuning is off",
 
+  // Quick capture window (§9.3)
+  "quick.placeholder": "Ask Ternion…",
+  "quick.openMain": "Open in main window",
+  "quick.screenshot": "Screenshot",
+  "quick.offline": "No endpoint reachable — check settings",
+  "quick.routeNote": "routed to",
+
   "chat.empty.title": "One interface. Three models.",
   "chat.empty.subtitle":
     "The right model for every message. Pick a model above, then start typing.",

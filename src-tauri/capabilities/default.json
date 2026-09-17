@@ -1,10 +1,11 @@
 {
   "identifier": "default",
-  "description": "Default capabilities for the main window and the capture overlay",
-  "windows": ["main", "capture"],
+  "description": "Default capabilities for the main window, the capture overlay, and the quick-ask palette",
+  "windows": ["main", "capture", "quick"],
   "permissions": [
     "core:default",
     "core:window:allow-close",
+    "core:window:allow-start-dragging",
     "opener:default"
   ]
 }

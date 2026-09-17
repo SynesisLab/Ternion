@@ -19,7 +19,16 @@ pub struct CaptureRegionArgs {
 }
 
 /// Open (or re-focus) the capture overlay over the monitor under the cursor.
-pub fn open_capture_overlay(app: &AppHandle) {
+/// `target` names the window the finished attachment is announced to
+/// ("main" composer chips or the quick-capture window, §9.3).
+pub fn open_capture_overlay(app: &AppHandle, target: &str) {
+    {
+        let state = app.state::<AppState>();
+        *state
+            .capture_target
+            .write()
+            .unwrap_or_else(|p| p.into_inner()) = target.to_string();
+    }
     if let Some(existing) = app.get_webview_window("capture") {
         let _ = existing.show();
         let _ = existing.set_focus();
@@ -55,8 +64,9 @@ pub fn open_capture_overlay(app: &AppHandle) {
 }
 
 /// The monitor the cursor is on (fallback: primary) — capture starts where
-/// the user is looking, not wherever Windows thinks "primary" is.
-fn target_monitor(app: &AppHandle) -> Option<tauri::Monitor> {
+/// the user is looking, not wherever Windows thinks "primary" is. Shared
+/// with the quick-capture window placement (§9.3).
+pub(crate) fn target_monitor(app: &AppHandle) -> Option<tauri::Monitor> {
     if let Ok(cursor) = app.cursor_position() {
         let monitors = app.available_monitors().unwrap_or_default();
         for m in monitors {
@@ -127,9 +137,15 @@ pub async fn capture_region(
     state.db.insert_attachment(att.clone()).await?;
 
     // The overlay closes itself after this resolves; the composer chip
-    // arrives via the event (§7.1 falls back to the clipboard flow, which
-    // is just Ctrl+V on the pasted screenshot).
-    let _ = app.emit_to("main", "ternion://capture-attached", &att);
+    // arrives via the event in whichever window started the capture
+    // (§7.1 falls back to the clipboard flow, which is just Ctrl+V on the
+    // pasted screenshot).
+    let target = state
+        .capture_target
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone();
+    let _ = app.emit_to(target.as_str(), "ternion://capture-attached", &att);
     if let Some(win) = app.get_webview_window("capture") {
         let _ = win.close();
     }

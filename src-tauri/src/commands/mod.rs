@@ -11,6 +11,7 @@ pub mod conversations;
 pub mod endpoints;
 pub mod models;
 pub mod permissions;
+pub mod quick;
 pub mod settings;
 
 pub use attachments::*;
@@ -20,6 +21,7 @@ pub use conversations::*;
 pub use endpoints::*;
 pub use models::*;
 pub use permissions::*;
+pub use quick::*;
 pub use settings::*;
 
 use crate::error::CmdError;

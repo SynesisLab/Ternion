@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 use crate::{
-    settings::{self, keys, SettingsCache},
+    settings::{keys, SettingsCache},
     types::{RoutingFlags, Target},
 };
 

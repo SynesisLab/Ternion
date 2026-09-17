@@ -7,6 +7,7 @@ import { CaptureOverlay } from "./components/CaptureOverlay";
 import { ChatHeader } from "./components/ChatHeader";
 import { Composer } from "./components/Composer";
 import { MessageList } from "./components/MessageList";
+import { QuickAsk } from "./components/QuickAsk";
 import { RouterLog } from "./components/RouterLog";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { Sidebar } from "./components/Sidebar";
@@ -18,10 +19,15 @@ import { useChatStore } from "./store/chatStore";
 const EMPTY_SUGGESTIONS: string[] = [];
 
 export default function App() {
-  // §7.1: the capture overlay mounts the same bundle but renders only the
-  // drag-rect UI (label is fixed per window, so this is stable per mount).
-  if (getCurrentWindow().label === "capture") {
+  // §7.1/§9.3: the capture overlay and quick-ask palette mount the same
+  // bundle but render only their own UI (label is fixed per window, so this
+  // is stable per mount).
+  const label = getCurrentWindow().label;
+  if (label === "capture") {
     return <CaptureOverlay />;
+  }
+  if (label === "quick") {
+    return <QuickAsk />;
   }
   return <MainApp />;
 }
@@ -30,6 +36,7 @@ function MainApp() {
   const init = useChatStore((s) => s.init);
   const conversations = useChatStore((s) => s.conversations);
   const activeId = useChatStore((s) => s.activeId);
+  const selectConversation = useChatStore((s) => s.selectConversation);
   const models = useChatStore((s) => s.models);
   const pin = useChatStore((s) => s.pin);
   const setPin = useChatStore((s) => s.setPin);
@@ -72,6 +79,17 @@ function MainApp() {
       void unlisten.then((f) => f());
     };
   }, [newConversation]);
+
+  // §9.3 "Open in main window": the quick-ask palette hands its exchange
+  // over; the backend has already surfaced and focused this window.
+  useEffect(() => {
+    const unlisten = listen<string>("ternion://open-conversation", (ev) => {
+      void selectConversation(ev.payload);
+    });
+    return () => {
+      void unlisten.then((f) => f());
+    };
+  }, [selectConversation]);
 
   const active = conversations.find((c) => c.id === activeId);
 

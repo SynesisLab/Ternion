@@ -77,6 +77,8 @@ pub fn run() {
             commands::save_attachment,
             commands::save_attachment_file,
             commands::capture_region,
+            commands::open_in_main,
+            commands::start_capture,
         ])
         .setup(|app| {
             use tauri::Manager;
@@ -141,14 +143,22 @@ pub fn run() {
 
             tray::setup(app)?;
 
-            // §7.1 quick capture: `Win+Alt+S` opens the drag-region overlay
-            // (hotkeys get a settings screen in M4; v1 is fixed).
+            // §7.1/§9.3 quick capture hotkeys (hotkeys get a settings screen
+            // in M4; v1 is fixed): `Win+Alt+S` opens the drag-region overlay,
+            // `Win+Alt+T` toggles the quick-ask palette.
             use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
             app.global_shortcut()
                 .on_shortcut("alt+super+s", |app, _shortcut, event| {
                     if event.state == ShortcutState::Pressed {
-                        commands::capture::open_capture_overlay(app);
+                        commands::capture::open_capture_overlay(app, "main");
                     }
+                })
+                .and_then(|()| {
+                    app.global_shortcut().on_shortcut("alt+super+t", |app, _shortcut, event| {
+                        if event.state == ShortcutState::Pressed {
+                            commands::quick::open_quick_window(app);
+                        }
+                    })
                 })
                 .map_err(|e| -> Box<dyn std::error::Error> {
                     format!("register capture hotkey: {e}").into()
