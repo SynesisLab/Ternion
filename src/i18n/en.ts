@@ -25,6 +25,14 @@ export const en = {
   "chat.tools.activity": "Tool activity",
   "chat.tools.running": "running…",
   "chat.tools.failed": "failed",
+  "workspace.title": "Workspace",
+  "workspace.none": "No folder bound — the model has no file access",
+  "workspace.add": "Bind folder…",
+  "workspace.addHint": "Absolute folder path, e.g. D:\\client-work",
+  "workspace.bind": "Bind",
+  "workspace.unbind": "Unbind",
+  "workspace.maxThree": "A chat can bind at most 3 workspaces",
+  "workspace.bound": "bound",
 
   // Triad routing (M1)
   "chat.pin.auto": "Auto",

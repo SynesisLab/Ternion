@@ -164,6 +164,25 @@ impl Database {
         .await
     }
 
+    /// Bind the conversation's workspace roots (§6.3) — the caller
+    /// (command layer) canonicalizes and caps the list.
+    pub async fn set_conversation_workspaces(
+        &self,
+        id: String,
+        roots: Vec<String>,
+    ) -> Result<(), CmdError> {
+        let json = serde_json::to_string(&roots)
+            .map_err(|e| CmdError::internal(format!("serialize roots: {e}")))?;
+        self.run(move |c| {
+            c.execute(
+                "UPDATE conversations SET workspace_roots = ?2 WHERE id = ?1",
+                params![id, json],
+            )
+            .map(|_| ())
+        })
+        .await
+    }
+
     pub async fn touch_conversation(&self, id: String, now: i64) -> Result<(), CmdError> {
         self.run(move |c| {
             c.execute(

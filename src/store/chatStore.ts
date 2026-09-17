@@ -20,6 +20,7 @@ import {
   renameConversation as apiRenameConversation,
   sendChat,
   setConversationModel,
+  setConversationWorkspaces,
   stopChat,
   takeSuggestions,
 } from "../lib/ipc";
@@ -104,6 +105,10 @@ interface ChatStore {
   newConversation: () => Promise<void>;
   renameConversation: (id: string, title: string) => Promise<void>;
   deleteConversation: (id: string) => Promise<void>;
+  /** Bind one more workspace root (§6.3, max 3 — backend validates). */
+  bindWorkspace: (id: string, path: string) => Promise<boolean>;
+  /** Unbind a workspace root from the conversation. */
+  unbindWorkspace: (id: string, path: string) => void;
   /** Pin change: 'auto' | 'scout' | 'titan' | explicit model id. */
   setPin: (value: string) => void;
   /** Explicit model fallback (M0-style picker selection). */
@@ -268,6 +273,41 @@ export const useChatStore = create<ChatStore>()((set, get) => ({
         }
       }
     }
+  },
+
+  async bindWorkspace(id, path) {
+    const trimmed = path.trim();
+    if (!trimmed) return false;
+    const roots = [
+      ...rootsOf(get(), id),
+      ...(rootsOf(get(), id).includes(trimmed) ? [] : [trimmed]),
+    ];
+    if (roots.length > 3) {
+      set({ initError: t("workspace.maxThree") });
+      return false;
+    }
+    try {
+      // The backend canonicalizes + validates (§6.3).
+      await setConversationWorkspaces(id, roots);
+      const conversations = await listConversations();
+      set({ conversations, initError: null });
+      return true;
+    } catch (e) {
+      set({ initError: String(e) });
+      return false;
+    }
+  },
+
+  unbindWorkspace(id, path) {
+    const roots = rootsOf(get(), id).filter((r) => r !== path);
+    set((s) => ({
+      conversations: s.conversations.map((c) =>
+        c.id === id ? { ...c, workspaceRoots: roots } : c,
+      ),
+    }));
+    setConversationWorkspaces(id, roots).catch((e) =>
+      set({ initError: String(e) }),
+    );
   },
 
   setPin(value) {
@@ -568,6 +608,14 @@ export const useChatStore = create<ChatStore>()((set, get) => ({
     }
   },
 }));
+
+/** Bound workspace roots of a conversation (empty = no FS access, §6.3). */
+function rootsOf(
+  state: { conversations: Conversation[] },
+  id: string,
+): string[] {
+  return state.conversations.find((c) => c.id === id)?.workspaceRoots ?? [];
+}
 
 // ---------------------------------------------------------------------------
 // Delta coalescing — one store update per FLUSH_MS per conversation.

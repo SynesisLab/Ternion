@@ -86,6 +86,14 @@ export function setConversationModel(
   return invoke("set_conversation_model", { id, model });
 }
 
+/** Bind 0–3 workspace roots (§6.3); the backend canonicalizes + validates. */
+export function setConversationWorkspaces(
+  id: string,
+  roots: string[],
+): Promise<void> {
+  return invoke("set_conversation_workspaces", { id, roots });
+}
+
 export function getMessages(conversationId: string): Promise<Message[]> {
   return invoke<Message[]>("get_messages", { conversationId });
 }

@@ -8,11 +8,13 @@ use std::sync::Arc;
 
 use futures::future::BoxFuture;
 
-/// Execution context handed to tools. Workspaces (§6.3) arrive in M2.3+;
-/// tool results fed to the model are always treated as untrusted text (§10.3).
+pub mod guard;
+
+/// Execution context handed to tools: the conversation's canonical workspace
+/// roots (§6.3 — the only folders FS tools may touch). Tool results fed to
+/// the model are always treated as untrusted text (§10.3).
 #[derive(Debug, Clone, Default)]
 pub struct ToolExecCtx {
-    #[allow(dead_code)] // M2.3+: bound workspace roots
     pub workspaces: Vec<String>,
 }
 
@@ -224,6 +226,28 @@ pub mod testkit {
             _ctx: &ToolExecCtx,
         ) -> BoxFuture<'_, Result<ToolOutcome, ToolError>> {
             Box::pin(async { Err(ToolError::Exec("boom".into())) })
+        }
+    }
+
+    /// Echoes the execution context — asserts workspace wiring end-to-end.
+    pub struct CtxTool;
+
+    impl Tool for CtxTool {
+        fn spec(&self) -> crate::types::ToolSpec {
+            crate::types::ToolSpec {
+                name: "ctx".into(),
+                description: "Reports the execution context".into(),
+                input_schema: serde_json::json!({"type": "object"}),
+            }
+        }
+
+        fn execute(
+            &self,
+            _args: serde_json::Value,
+            ctx: &ToolExecCtx,
+        ) -> BoxFuture<'_, Result<ToolOutcome, ToolError>> {
+            let workspaces = ctx.workspaces.join("|");
+            Box::pin(async move { Ok(ToolOutcome::Ok(format!("workspaces:{workspaces}"))) })
         }
     }
 }

@@ -322,7 +322,8 @@ async fn stream_once(
 
         // Validate → execute → wrap → append, one result message per call.
         for call in &hop.calls {
-            let (result_text, is_error) = execute_tool_call(state, message_id, call).await?;
+            let (result_text, is_error) =
+                execute_tool_call(state, message_id, call, &conv.workspace_roots).await?;
             let envelope = format!(
                 r#"<tool_result id="{}" source="untrusted">{result_text}</tool_result>"#,
                 call.id
@@ -502,6 +503,7 @@ async fn execute_tool_call(
     state: &AppState,
     message_id: &str,
     call: &crate::types::ToolCall,
+    workspaces: &[String],
 ) -> Result<(String, bool), CmdError> {
     let row_id = ids::new_id();
     let now = ids::now_ms();
@@ -559,7 +561,9 @@ async fn execute_tool_call(
 
     // §6.6 permission matrix arrives in M2.6; everything auto-runs until the
     // fs tools (which mutate) exist. Recorded as "auto" in permission_mode.
-    let ctx = crate::tools::ToolExecCtx::default();
+    let ctx = crate::tools::ToolExecCtx {
+        workspaces: workspaces.to_vec(),
+    };
     let executed = tool.execute(args, &ctx).await;
     let (result_text, is_error) = match executed {
         Ok(outcome) => {
@@ -1763,6 +1767,38 @@ mod tests {
         chat_send_inner(&state, args("hi")).await.unwrap();
         let reqs = received.lock().unwrap_or_else(|p| p.into_inner()).clone();
         assert!(reqs[0].tools.is_none(), "empty registry ⇒ no tools array");
+    }
+
+    #[tokio::test]
+    async fn tool_exec_ctx_carries_conversation_workspaces() {
+        let provider = FakeProvider::scripted_sequence(vec![
+            tool_call_script("ctx", "{}", ""),
+            main_stream("done", 2),
+        ]);
+        let (_dir, mut state) = app_with(provider);
+        state
+            .tool_registry
+            .register(Arc::new(crate::tools::testkit::CtxTool));
+        create_conv(&state).await;
+        let root = tempfile::tempdir().unwrap();
+        let canonical = std::fs::canonicalize(root.path()).unwrap();
+        state
+            .db
+            .set_conversation_workspaces(
+                "c1".into(),
+                vec![canonical.display().to_string()],
+            )
+            .await
+            .unwrap();
+
+        chat_send_inner(&state, args("hi")).await.unwrap();
+
+        // The executing tool saw the bound root (canonical, verbatim form)
+        // through its context.
+        let msgs = messages(&state).await;
+        let rows = state.db.list_tool_calls(msgs[1].id.clone()).await.unwrap();
+        let result = rows[0].result.as_deref().unwrap_or("");
+        assert_eq!(result, format!("workspaces:{}", canonical.display()));
     }
 
     #[tokio::test]

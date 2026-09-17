@@ -51,6 +51,7 @@ pub fn run() {
             commands::rename_conversation,
             commands::delete_conversation,
             commands::set_conversation_model,
+            commands::set_conversation_workspaces,
             commands::get_messages,
             commands::list_models,
             commands::get_setting,

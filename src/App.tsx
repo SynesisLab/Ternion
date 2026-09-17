@@ -24,6 +24,8 @@ export default function App() {
   const connection = useChatStore((s) => s.connection);
   const refreshModels = useChatStore((s) => s.refreshModels);
   const renameConversation = useChatStore((s) => s.renameConversation);
+  const bindWorkspace = useChatStore((s) => s.bindWorkspace);
+  const unbindWorkspace = useChatStore((s) => s.unbindWorkspace);
   const newConversation = useChatStore((s) => s.newConversation);
   const sendMessage = useChatStore((s) => s.sendMessage);
   const continueWithTitan = useChatStore((s) => s.continueWithTitan);
@@ -78,6 +80,8 @@ export default function App() {
           connection={connection}
           refreshModels={() => void refreshModels()}
           renameConversation={renameConversation}
+          bindWorkspace={bindWorkspace}
+          unbindWorkspace={unbindWorkspace}
           disabled={streaming}
           onOpenSettings={() => setSettingsOpen(true)}
           onOpenRouterLog={() => setRouterLogOpen(true)}
