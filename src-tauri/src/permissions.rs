@@ -24,17 +24,22 @@ pub fn is_mutating(tool: &str) -> bool {
 }
 
 /// Every tool the matrix gates: the mutators plus `shell`, which asks on
-/// every call — arbitrary commands can never be whitelisted (§6.6).
+/// every call — arbitrary commands can never be whitelisted (§6.6) — plus
+/// every `mcp__*` tool: third-party code behaves like the shell tool
+/// (§6.5), ask by default but grantable per tool.
 pub const GATED_TOOLS: &[&str] = &["shell"];
 
 pub fn needs_gate(tool: &str) -> bool {
-    is_mutating(tool) || GATED_TOOLS.contains(&tool)
+    is_mutating(tool)
+        || GATED_TOOLS.contains(&tool)
+        || tool.starts_with(crate::mcp::MCP_PREFIX)
 }
 
 /// Whether a tool may hold a session/always grant at all. Shell is excluded:
-/// approving one command must never pre-approve the next.
+/// approving one command must never pre-approve the next. MCP tools are
+/// grantable — one third-party tool ≠ every tool on the server.
 pub fn grantable(tool: &str) -> bool {
-    is_mutating(tool)
+    is_mutating(tool) || tool.starts_with(crate::mcp::MCP_PREFIX)
 }
 
 /// The path argument key a tool's matrix lookup keys on (fs_move/fs_copy
@@ -85,6 +90,15 @@ mod tests {
             assert!(!needs_gate(read), "{read} must not gate");
             assert!(!grantable(read), "{read} must not be grantable");
         }
+    }
+
+    #[test]
+    fn mcp_tools_gate_like_the_shell_but_are_grantable() {
+        assert!(needs_gate("mcp__github__create_issue"));
+        assert!(needs_gate("mcp__fs__read_file"), "even reads gate by default");
+        assert!(grantable("mcp__github__create_issue"));
+        assert!(!needs_gate("mcp"));
+        assert!(!needs_gate("mcp_"));
     }
 
     #[test]

@@ -411,6 +411,28 @@ pub struct EndpointTestResult {
     pub error: Option<String>,
 }
 
+/// A configured MCP stdio server (§6.5). `command` is the full command line
+/// the server is spawned with (`cmd /c <command>` on Windows).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServer {
+    pub id: String,
+    pub name: String,
+    pub command: String,
+    pub enabled: bool,
+}
+
+/// Result of an MCP connection test — mirror of `EndpointTestResult`, listing
+/// the server's tool names (namespaced) instead of model ids.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpTestResult {
+    pub ok: bool,
+    pub latency_ms: u64,
+    pub tools: Vec<String>,
+    pub error: Option<String>,
+}
+
 /// Result of a finished `chat_send` invocation.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

@@ -66,7 +66,13 @@ tempfile = "3"
 # no WinRT surface area. A Windows.Graphics.Capture upgrade can slot in
 # behind the same function signature later.
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Gdi"] }
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
 
 [profile.release]
 codegen-units = 1

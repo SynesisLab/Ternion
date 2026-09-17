@@ -5,21 +5,27 @@ import {
   clearModelRecord,
   clearSessionPermissions,
   deleteEndpointProfile,
+  deleteMcpServer,
   getSetting,
   listEndpointProfiles,
+  listMcpServers,
   listModels,
   listToolPermissions,
   resetAdaptive,
   saveEndpointProfile,
+  saveMcpServer,
   saveModelRecord,
   setEndpointApiKey,
   setSetting,
   setToolPermission,
   testEndpoint,
+  testMcpServer,
   triadReport,
   verifyModel,
   type EndpointProfile,
   type EndpointTestResult,
+  type McpServer,
+  type McpTestResult,
   type ToolPermissionRow,
 } from "../lib/ipc";
 import type { ModelInfo, TriadReport } from "../types/chat";
@@ -42,7 +48,7 @@ const DEFAULT_HANDOFF_RECENT = "6";
 const DEFAULT_HERALD_TIMEOUT = "8000";
 
 type TestState = "idle" | "testing" | "ok" | "fail";
-type Tab = "general" | "endpoints" | "models" | "triad" | "permissions";
+type Tab = "general" | "endpoints" | "models" | "triad" | "permissions" | "mcp";
 
 export function SettingsDialog({
   open,
@@ -274,6 +280,9 @@ export function SettingsDialog({
               onClick={() => setTab("permissions")}
             >
               {t("settings.tab.permissions")}
+            </TabButton>
+            <TabButton active={tab === "mcp"} onClick={() => setTab("mcp")}>
+              {t("settings.tab.mcp")}
             </TabButton>
           </div>
           <button
@@ -562,6 +571,8 @@ export function SettingsDialog({
               </span>
             </label>
           </div>
+        ) : tab === "mcp" ? (
+          <McpTab />
         ) : (
           <div className="space-y-3">
             <div className="flex items-center justify-between">
@@ -1099,6 +1110,207 @@ function EndpointsTab({
       )}
     </div>
   );
+}
+
+/** MCP tool servers (§6.5): local stdio servers registered by command line.
+ * Their tools merge into chat as mcp__<server>__<tool> and gate like the
+ * shell — ask per call until an "always" grant is set in Permissions. */
+function McpTab() {
+  const [servers, setServers] = useState<McpServer[]>([]);
+  const [addOpen, setAddOpen] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [newCommand, setNewCommand] = useState("");
+  const [testResults, setTestResults] = useState<Record<string, McpTestResult>>({});
+  const [testing, setTesting] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    void reload();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const reload = async () => {
+    setServers(await listMcpServers().catch(() => []));
+  };
+
+  const runTest = (s: McpServer) => {
+    setTesting((t) => ({ ...t, [s.id]: true }));
+    void testMcpServer(s.command)
+      .then((result) => setTestResults((t) => ({ ...t, [s.id]: result })))
+      .catch(
+        () =>
+          setTestResults((t) => ({
+            ...t,
+            [s.id]: { ok: false, latencyMs: 0, tools: [], error: "unreachable" },
+          })),
+      )
+      .finally(() => setTesting((t) => ({ ...t, [s.id]: false })));
+  };
+
+  const addServer = async () => {
+    await saveMcpServer({
+      id: "",
+      name: newName.trim(),
+      command: newCommand.trim(),
+      enabled: true,
+    }).catch(() => {});
+    setNewName("");
+    setNewCommand("");
+    setAddOpen(false);
+    await reload();
+  };
+
+  const toggleEnabled = async (s: McpServer) => {
+    await saveMcpServer({ ...s, enabled: !s.enabled }).catch(() => {});
+    await reload();
+  };
+
+  const dropServer = async (s: McpServer) => {
+    await deleteMcpServer(s.id).catch(() => {});
+    await reload();
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="text-xs font-medium text-[color:var(--color-muted)]">
+        {t("settings.mcp.title")}
+      </div>
+      <div className="text-xs text-[color:var(--color-muted)]">
+        {t("settings.mcp.hint")}
+      </div>
+
+      {servers.length === 0 && (
+        <div className="rounded-lg border border-[color:var(--color-edge)] px-3 py-4 text-center text-xs text-[color:var(--color-muted)]">
+          {t("settings.mcp.none")}
+        </div>
+      )}
+
+      <div className="divide-y divide-[color:var(--color-edge)] rounded-lg border border-[color:var(--color-edge)]">
+        {servers.map((s) => {
+          const result = testResults[s.id];
+          const busy = testing[s.id];
+          return (
+            <div key={s.id} className="space-y-1.5 px-3 py-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="truncate text-sm text-[color:var(--color-ink)]">
+                    {s.name}
+                  </div>
+                  <div className="truncate font-mono text-xs text-[color:var(--color-muted)]">
+                    {s.command}
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void toggleEnabled(s)}
+                    className={`rounded px-1.5 py-0.5 text-[10px] ${
+                      s.enabled
+                        ? "text-[color:var(--color-accent-2)]"
+                        : "text-[color:var(--color-muted)]"
+                    }`}
+                  >
+                    {s.enabled ? "●" : "○"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void runTest(s)}
+                    className="rounded-lg border border-[color:var(--color-edge)] px-2 py-1 text-xs text-[color:var(--color-ink)] hover:border-[color:var(--color-accent)]"
+                  >
+                    {busy ? t("settings.mcp.testing") : t("settings.mcp.test")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void dropServer(s)}
+                    className="rounded-lg border border-[color:var(--color-edge)] px-2 py-1 text-xs text-[color:var(--color-muted)] hover:text-[color:var(--color-danger)]"
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+
+              <div className="min-h-4 text-xs">
+                {result?.ok && (
+                  <span className="text-[color:var(--color-accent-2)]">
+                    ✓ {result.tools.length} {t("settings.mcp.tools")} ·{" "}
+                    {result.latencyMs} ms
+                  </span>
+                )}
+                {result && !result.ok && (
+                  <span className="break-all text-[color:var(--color-danger)]">
+                    ✕ {result.error}
+                  </span>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {addOpen ? (
+        <div className="space-y-2 rounded-lg border border-[color:var(--color-edge)] p-3">
+          <div className="grid grid-cols-2 gap-2">
+            <label className="block">
+              <span className="mb-1 block text-[11px] font-medium text-[color:var(--color-muted)]">
+                {t("settings.mcp.name")}
+              </span>
+              <input
+                type="text"
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                placeholder={t("settings.mcp.namePlaceholder")}
+                className="w-full rounded-lg border border-[color:var(--color-edge)] bg-[color:var(--color-bg)] px-2.5 py-1.5 text-sm outline-none focus:border-[color:var(--color-accent)]"
+              />
+            </label>
+            <div className="flex items-end pb-0.5 text-[11px] text-[color:var(--color-muted)]">
+              mcp__{sanitizePreview(newName)}__&lt;tool&gt;
+            </div>
+          </div>
+          <input
+            type="text"
+            value={newCommand}
+            onChange={(e) => setNewCommand(e.target.value)}
+            placeholder={t("settings.mcp.commandPlaceholder")}
+            className="w-full rounded-lg border border-[color:var(--color-edge)] bg-[color:var(--color-bg)] px-2.5 py-1.5 font-mono text-sm outline-none focus:border-[color:var(--color-accent)]"
+          />
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setAddOpen(false)}
+              className="rounded-lg border border-[color:var(--color-edge)] px-3 py-1.5 text-xs text-[color:var(--color-muted)] hover:text-[color:var(--color-ink)]"
+            >
+              {t("settings.close")}
+            </button>
+            <button
+              type="button"
+              onClick={() => void addServer()}
+              disabled={!newName.trim() || !newCommand.trim()}
+              className="rounded-lg bg-[color:var(--color-accent)] px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-40"
+            >
+              {t("settings.mcp.add")}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setAddOpen(true)}
+          className="rounded-lg border border-dashed border-[color:var(--color-edge)] px-3 py-1.5 text-xs text-[color:var(--color-muted)] hover:border-[color:var(--color-accent)] hover:text-[color:var(--color-ink)]"
+        >
+          + {t("settings.mcp.add")}
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** Live namespace preview in the add form: what the tool names will look
+ * like once the server name is sanitized (mirrors sanitize_server_name). */
+function sanitizePreview(name: string): string {
+  const cleaned = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return cleaned || "server";
 }
 
 /** Capability registry (§5.4): discovery facts + user records, grouped by

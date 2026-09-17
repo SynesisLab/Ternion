@@ -13,6 +13,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ("0006_endpoint_profiles", include_str!("migrations/0006_endpoint_profiles.sql")),
     ("0007_model_records", include_str!("migrations/0007_model_records.sql")),
     ("0008_attachments", include_str!("migrations/0008_attachments.sql")),
+    ("0009_mcp_servers", include_str!("migrations/0009_mcp_servers.sql")),
 ];
 
 pub fn run(conn: &Connection) -> rusqlite::Result<()> {

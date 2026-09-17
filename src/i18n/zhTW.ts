@@ -105,6 +105,7 @@ export const zhTW: Record<I18nKey, string> = {
   "settings.tab.models": "模型",
   "settings.tab.triad": "Triad",
   "settings.tab.permissions": "權限",
+  "settings.tab.mcp": "MCP",
 
   // Endpoint profiles (M3, §5.1)
   "settings.endpoints.title": "端點設定檔",
@@ -122,6 +123,17 @@ export const zhTW: Record<I18nKey, string> = {
   "settings.endpoints.test": "測試",
   "settings.endpoints.testing": "…",
   "settings.endpoints.models": "個模型",
+  "settings.mcp.title": "工具伺服器（MCP）",
+  "settings.mcp.hint":
+    "本機 stdio 伺服器。其工具會以 mcp__<伺服器>__<工具> 的名稱合併，每次呼叫都會先請求授權，直到您在「權限」中允許。",
+  "settings.mcp.none": "尚未設定任何伺服器。",
+  "settings.mcp.add": "新增伺服器",
+  "settings.mcp.name": "名稱",
+  "settings.mcp.namePlaceholder": "檔案系統",
+  "settings.mcp.commandPlaceholder": "npx -y @modelcontextprotocol/server-filesystem C:\\tools",
+  "settings.mcp.test": "測試",
+  "settings.mcp.testing": "…",
+  "settings.mcp.tools": "個工具",
 
   // Capability registry (M3, §5.4)
   "settings.models.title": "能力登錄 — 手動紀錄優先於探測結果",

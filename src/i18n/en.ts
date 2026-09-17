@@ -99,6 +99,7 @@ export const en = {
   "settings.tab.models": "Models",
   "settings.tab.triad": "Triad",
   "settings.tab.permissions": "Permissions",
+  "settings.tab.mcp": "MCP",
 
   // Endpoint profiles (M3, §5.1)
   "settings.endpoints.title": "Endpoint profiles",
@@ -116,6 +117,17 @@ export const en = {
   "settings.endpoints.test": "Test",
   "settings.endpoints.testing": "…",
   "settings.endpoints.models": "models",
+  "settings.mcp.title": "Tool servers (MCP)",
+  "settings.mcp.hint":
+    "Local stdio servers. Their tools appear as mcp__<server>__<tool> and ask for approval per call until you grant them in Permissions.",
+  "settings.mcp.none": "No servers configured yet.",
+  "settings.mcp.add": "Add server",
+  "settings.mcp.name": "Name",
+  "settings.mcp.namePlaceholder": "Filesystem",
+  "settings.mcp.commandPlaceholder": "npx -y @modelcontextprotocol/server-filesystem C:\\tools",
+  "settings.mcp.test": "Test",
+  "settings.mcp.testing": "…",
+  "settings.mcp.tools": "tools",
 
   // Capability registry (M3, §5.4)
   "settings.models.title": "Capability registry — chips override discovery facts",

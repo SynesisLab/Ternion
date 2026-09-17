@@ -25,6 +25,9 @@ pub struct AppState {
     pub suggestions: Arc<RwLock<HashMap<String, Vec<String>>>>,
     /// Bundled tool set (§6.1). Immutable after startup.
     pub tool_registry: crate::tools::ToolRegistry,
+    /// §6.5 MCP sessions — spawned lazily per enabled server, reused across
+    /// turns; a config change drops the cache (`invalidate`).
+    pub mcp: crate::mcp::McpManager,
     /// §6.6 pending approval requests, keyed by request id. The executor
     /// parks its `oneshot` here; `respond_approval` resolves it.
     pub approvals: AsyncMutex<HashMap<String, tokio::sync::oneshot::Sender<ApprovalReply>>>,
@@ -64,6 +67,7 @@ impl AppState {
             model_registry: RwLock::new(Vec::new()),
             suggestions: Arc::new(RwLock::new(HashMap::new())),
             tool_registry: crate::tools::ToolRegistry::bundled(),
+            mcp: crate::mcp::McpManager::default(),
             approvals: AsyncMutex::new(HashMap::new()),
             session_grants: AsyncMutex::new(permissions::SessionGrants::default()),
             providers: RwLock::new(providers),

@@ -5,6 +5,7 @@ mod db;
 mod error;
 mod ids;
 mod img;
+mod mcp;
 mod permissions;
 mod providers;
 mod router;
@@ -78,6 +79,10 @@ pub fn run() {
             commands::set_endpoint_api_key,
             commands::clear_endpoint_api_key,
             commands::test_endpoint,
+            commands::list_mcp_servers,
+            commands::save_mcp_server,
+            commands::delete_mcp_server,
+            commands::test_mcp_server,
             commands::save_attachment,
             commands::save_attachment_file,
             commands::capture_region,

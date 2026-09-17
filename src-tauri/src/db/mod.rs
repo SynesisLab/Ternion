@@ -17,7 +17,7 @@ use crate::{
     error::CmdError,
     types::{
         Attachment, ChatRole, ContentPart, Conversation, DecisionSource, EndpointProfile,
-        Message, MessageRouting, MessageStatus, ModelRecord, ModelRole, RoleStat,
+        Message, MessageRouting, MessageStatus, McpServer, ModelRecord, ModelRole, RoleStat,
         RoutingDecision, RoutingEvent, Target, ToolCallRow, TriadReport,
     },
     ids,
@@ -181,6 +181,51 @@ impl Database {
         self.run(move |c| {
             let changed = c
                 .execute("DELETE FROM endpoint_profiles WHERE id = ?1", params![id])?;
+            Ok(changed > 0)
+        })
+        .await
+    }
+
+    // -- MCP servers (§6.5) ---------------------------------------------------
+
+    /// Configured MCP stdio servers, oldest first.
+    pub async fn list_mcp_servers(&self) -> Result<Vec<McpServer>, CmdError> {
+        self.run(|c| {
+            let mut stmt = c.prepare(
+                "SELECT id, name, command, enabled FROM mcp_servers ORDER BY created_at, rowid",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok(McpServer {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    command: r.get(2)?,
+                    enabled: r.get::<_, i64>(3)? != 0,
+                })
+            })?;
+            rows.collect()
+        })
+        .await
+    }
+
+    /// Upsert on `id`; the command layer owns validation and timestamps.
+    pub async fn upsert_mcp_server(&self, server: McpServer, now: i64) -> Result<(), CmdError> {
+        self.run(move |c| {
+            c.execute(
+                "INSERT INTO mcp_servers (id, name, command, enabled, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+                 ON CONFLICT(id) DO UPDATE SET
+                    name = excluded.name, command = excluded.command,
+                    enabled = excluded.enabled, updated_at = excluded.updated_at",
+                params![server.id, server.name, server.command, server.enabled as i64, now],
+            )
+            .map(|_| ())
+        })
+        .await
+    }
+
+    pub async fn delete_mcp_server(&self, id: String) -> Result<bool, CmdError> {
+        self.run(move |c| {
+            let changed = c.execute("DELETE FROM mcp_servers WHERE id = ?1", params![id])?;
             Ok(changed > 0)
         })
         .await

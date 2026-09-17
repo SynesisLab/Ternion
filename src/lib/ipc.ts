@@ -292,3 +292,37 @@ export function testEndpoint(args: {
 }): Promise<EndpointTestResult> {
   return invoke<EndpointTestResult>("test_endpoint", { args });
 }
+
+// -- MCP servers (§6.5) -------------------------------------------------------
+
+export interface McpServer {
+  id: string;
+  name: string;
+  /** Full command line — spawned via `cmd /c` on Windows. */
+  command: string;
+  enabled: boolean;
+}
+
+export interface McpTestResult {
+  ok: boolean;
+  latencyMs: number;
+  /** Bare tool names (not yet namespaced — the server name is the user's). */
+  tools: string[];
+  error: string | null;
+}
+
+export function listMcpServers(): Promise<McpServer[]> {
+  return invoke<McpServer[]>("list_mcp_servers");
+}
+
+export function saveMcpServer(server: McpServer): Promise<McpServer> {
+  return invoke<McpServer>("save_mcp_server", { server });
+}
+
+export function deleteMcpServer(id: string): Promise<void> {
+  return invoke("delete_mcp_server", { id });
+}
+
+export function testMcpServer(command: string): Promise<McpTestResult> {
+  return invoke<McpTestResult>("test_mcp_server", { command });
+}
