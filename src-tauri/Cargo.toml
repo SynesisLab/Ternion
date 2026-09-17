@@ -38,6 +38,9 @@ ignore = "0.4"
 grep-searcher = "0.1"
 grep-regex = "0.1"
 
+# Recycle Bin deletes for fs_delete (§6.2: never permanent).
+trash = "5"
+
 [dev-dependencies]
 tempfile = "3"
 

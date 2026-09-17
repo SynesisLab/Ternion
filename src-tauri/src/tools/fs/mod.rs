@@ -1,18 +1,25 @@
 //! File-system tools (design §6.2): reads in M2.4 (`fs_list`, `fs_read`,
-//! `fs_stat`, `fs_search`, `fs_tree` — all auto-allowed), mutating tools in
-//! M2.5 behind the §6.6 gate. Every path the model supplies goes through
-//! `guard::resolve` before any FS call; results are untrusted text (§10.3).
+//! `fs_stat`, `fs_search`, `fs_tree` — all auto-allowed); mutating tools in
+//! M2.5 (`fs_write`, `fs_edit`, `fs_move`, `fs_copy`, `fs_delete`,
+//! `fs_mkdir`), registered in M2.6 behind the §6.6 permission gate. Every
+//! path the model supplies goes through `guard::resolve` / `resolve_new`
+//! before any FS call; results are untrusted text (§10.3).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::{Tool, ToolError, ToolExecCtx, ToolOutcome};
 
+pub mod delete;
+pub mod edit;
 pub mod list;
+pub mod mkdir;
 pub mod read;
 pub mod search;
 pub mod stat;
+pub mod transfer;
 pub mod tree;
+pub mod write;
 
 /// The bundled read tools (M2.4). Registered only for conversations with a
 /// bound workspace — the orchestrator gates on `workspace_roots`.
@@ -23,6 +30,20 @@ pub fn bundled_read_tools() -> Vec<Arc<dyn Tool>> {
         Arc::new(stat::FsStat),
         Arc::new(search::FsSearch),
         Arc::new(tree::FsTree),
+    ]
+}
+
+/// The bundled mutating tools (M2.5 executors). Registered in M2.6, where
+/// the §6.6 permission matrix gates every call before execution.
+#[allow(dead_code)]
+pub fn bundled_mutating_tools() -> Vec<Arc<dyn Tool>> {
+    vec![
+        Arc::new(write::FsWrite),
+        Arc::new(edit::FsEdit),
+        Arc::new(transfer::FsMove),
+        Arc::new(transfer::FsCopy),
+        Arc::new(delete::FsDelete),
+        Arc::new(mkdir::FsMkdir),
     ]
 }
 
@@ -41,6 +62,20 @@ pub fn resolve_arg(
     };
     let roots: Vec<PathBuf> = ctx.workspaces.iter().map(PathBuf::from).collect();
     super::guard::resolve(raw, &roots).map_err(|e| ToolError::Exec(e.to_string()))
+}
+
+/// Like `resolve_arg`, but the target may not exist yet — for tools that
+/// create files/directories (fs_write, fs_mkdir, move/copy destinations).
+pub fn resolve_new_arg(
+    args: &serde_json::Value,
+    ctx: &ToolExecCtx,
+    key: &str,
+) -> Result<super::guard::ResolvedPath, ToolError> {
+    let Some(raw) = args.get(key).and_then(|v| v.as_str()) else {
+        return Err(ToolError::Exec(format!("missing `{key}` argument")));
+    };
+    let roots: Vec<PathBuf> = ctx.workspaces.iter().map(PathBuf::from).collect();
+    super::guard::resolve_new(raw, &roots).map_err(|e| ToolError::Exec(e.to_string()))
 }
 
 /// Optional string argument.

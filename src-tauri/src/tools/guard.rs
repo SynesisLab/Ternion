@@ -158,6 +158,123 @@ pub fn resolve(raw: &str, roots: &[PathBuf]) -> Result<ResolvedPath, GuardError>
     }
 }
 
+/// Like `resolve`, but the target may not exist yet (fs_write, fs_mkdir,
+/// fs_move/fs_copy destinations). The walk finds the deepest existing
+/// ancestor, canonicalizes it (resolving junctions — an ancestor reparse
+/// point escaping the root is caught), then appends the missing trailing
+/// names, which passed the lexical checks and cannot themselves be reparse
+/// points — they don't exist. `..` never lands in the appended tail:
+/// canonicalization normalizes it away against existing prefixes, matching
+/// Win32 semantics for relative `..`.
+pub fn resolve_new(raw: &str, roots: &[PathBuf]) -> Result<ResolvedPath, GuardError> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err(GuardError::Empty);
+    }
+    if raw.chars().any(|c| (c as u32) < 0x20) {
+        return Err(GuardError::Invalid(
+            "control characters are not allowed".into(),
+        ));
+    }
+    check_components(strip_verbatim(raw))?;
+    let drive_relative =
+        (raw.starts_with('/') || raw.starts_with('\\')) && !raw.starts_with("\\\\");
+    if drive_relative {
+        return Err(GuardError::Invalid(
+            "device-relative paths (leading backslash) are not supported; \
+             use an absolute path inside a workspace"
+                .into(),
+        ));
+    }
+    let absolute = raw.len() >= 2 && raw.as_bytes()[1] == b':';
+    let mut matches: Vec<ResolvedPath> = Vec::new();
+    let mut outside: Vec<String> = Vec::new();
+    let mut not_found = 0usize;
+    if absolute || raw.starts_with("\\\\") {
+        match new_target(std::path::Path::new(raw), None, roots) {
+            Ok(p) => matches.push(p),
+            Err(GuardError::Outside(roots_shown)) => outside = roots_shown,
+            Err(GuardError::NotFound) => not_found = 1,
+            Err(e) => return Err(e),
+        }
+    } else {
+        for root in roots {
+            match new_target(&root.join(raw), Some(root), roots) {
+                Ok(p) => matches.push(p),
+                Err(GuardError::Outside(_)) => outside.push(display_root(root)),
+                Err(GuardError::NotFound) => not_found += 1,
+                Err(e) => return Err(e),
+            }
+        }
+    }
+    match matches.len() {
+        0 if roots.is_empty() => Err(GuardError::Outside(Vec::new())),
+        0 if not_found == roots.len().max(1) => Err(GuardError::NotFound),
+        0 => Err(GuardError::Outside(outside)),
+        1 => Ok(matches.into_iter().next().expect("len == 1")),
+        _ => Err(GuardError::Ambiguous(
+            roots.iter().map(display_root).collect(),
+        )),
+    }
+}
+
+/// Walk `target` upward until an existing ancestor canonicalizes, verify it
+/// stays inside the owning root, and re-join the popped names. For relative
+/// targets the owner is the bound root the model's path was joined onto; for
+/// absolute targets the owner is whichever bound root contains the ancestor.
+fn new_target(
+    target: &Path,
+    stored_root: Option<&Path>,
+    roots: &[PathBuf],
+) -> Result<ResolvedPath, GuardError> {
+    let mut probe = target.to_path_buf();
+    let mut missing: Vec<std::ffi::OsString> = Vec::new();
+    let existing = loop {
+        match std::fs::canonicalize(&probe) {
+            Ok(existing) => break existing,
+            Err(_) => {
+                let Some(name) = probe.file_name().map(|f| f.to_os_string()) else {
+                    return Err(GuardError::NotFound);
+                };
+                missing.push(name);
+                if !probe.pop() {
+                    return Err(GuardError::NotFound);
+                }
+            }
+        }
+    };
+    let (workspace, root_canonical) = match stored_root {
+        Some(root_stored) => {
+            let canonical = std::fs::canonicalize(root_stored).map_err(|_| GuardError::NotFound)?;
+            (root_stored.to_path_buf(), canonical)
+        }
+        None => {
+            let mut found = None;
+            for root in roots {
+                let Ok(c) = std::fs::canonicalize(root) else { continue };
+                if path_prefix_root(&existing, &c).is_some() {
+                    found = Some((root.clone(), c));
+                    break;
+                }
+            }
+            match found {
+                Some(pair) => pair,
+                None => Err(GuardError::Outside(
+                    roots.iter().map(display_root).collect(),
+                ))?,
+            }
+        }
+    };
+    if path_prefix_root(&existing, &root_canonical).is_none() {
+        return Err(GuardError::Outside(vec![display_root(&workspace)]));
+    }
+    let mut path = existing;
+    for name in missing.iter().rev() {
+        path.push(name);
+    }
+    Ok(ResolvedPath { path, workspace })
+}
+
 /// Canonicalize + validate a workspace root at bind time: absolute, exists,
 /// is a directory. Returns the canonical path the guard compares against.
 pub fn normalize_root(raw: &str) -> Result<PathBuf, GuardError> {
@@ -480,6 +597,76 @@ mod tests {
         match resolve("sub/leak.txt", &[root]) {
             Err(GuardError::Outside(_) | GuardError::NotFound) => {}
             other => panic!("junction escape must be rejected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_new_targets_that_do_not_exist_yet() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = root_of(dir.path());
+        let r = resolve_new("brand-new.txt", &[root.clone()]).unwrap();
+        assert_eq!(r.workspace, root);
+        assert!(r.path.ends_with("brand-new.txt"));
+        assert!(!r.path.exists(), "creation target: nothing on disk yet");
+        // Deeper, with missing parents.
+        let r = resolve_new("a/b/c.txt", &[root.clone()]).unwrap();
+        assert!(r.path.ends_with(r"a\b\c.txt"), "{}", r.path.display());
+    }
+
+    #[test]
+    fn resolve_new_dot_dot_normalizes_like_win32() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = root_of(dir.path());
+        touch(dir.path(), "sub/deep.txt");
+        // `sub/other/../new.txt` — Win32 normalizes `..` against existing
+        // prefixes, never traversing a junction in the popped segment.
+        let r = resolve_new("sub/other/../new.txt", &[root.clone()]).unwrap();
+        assert!(r.path.ends_with(r"sub\new.txt"), "{}", r.path.display());
+        assert!(r.path.starts_with(&canonical(dir.path())), "inside root");
+    }
+
+    #[test]
+    fn resolve_new_rejects_escapes_and_bad_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = root_of(dir.path());
+        // Lexical escape above the root.
+        match resolve_new("../evil.txt", &[root.clone()]) {
+            Err(GuardError::Outside(_) | GuardError::NotFound) => {}
+            other => panic!(".. must not escape: {other:?}"),
+        }
+        // Reserved names in the creation tail.
+        assert!(resolve_new("CON", &[root.clone()]).is_err());
+        assert!(resolve_new("bad.", &[root.clone()]).is_err());
+        assert!(resolve_new("a*b.txt", &[root.clone()]).is_err());
+        // Device-relative.
+        assert!(resolve_new(r"\x", &[root]).is_err());
+    }
+
+    /// Junction escape on a creation path: the existing ancestor must be
+    /// caught even though the leaf doesn't exist. Skips if mklink is
+    /// unavailable.
+    #[test]
+    fn resolve_new_junction_ancestor_denied() {
+        use std::os::windows::process::CommandExt;
+        use std::process::Command;
+
+        let dir = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let root = root_of(dir.path());
+        let ok = Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(dir.path().join("sub"))
+            .arg(other.path())
+            .creation_flags(0x0800_0000)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !ok {
+            return;
+        }
+        match resolve_new("sub/leak.txt", &[root]) {
+            Err(GuardError::Outside(_) | GuardError::NotFound) => {}
+            other => panic!("junction ancestor must be rejected: {other:?}"),
         }
     }
 }
