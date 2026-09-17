@@ -271,7 +271,7 @@ export function SettingsDialog({
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="w-full max-w-lg rounded-xl border border-[color:var(--color-edge)] bg-[color:var(--color-panel)] p-5 shadow-2xl">
+      <div className="flex max-h-[85vh] w-full max-w-lg flex-col rounded-xl border border-[color:var(--color-edge)] bg-[color:var(--color-panel)] p-5 shadow-2xl">
         <div className="mb-4 flex items-center justify-between">
           <div className="flex items-center gap-1 rounded-lg border border-[color:var(--color-edge)] bg-[color:var(--color-bg)] p-0.5">
             <TabButton active={tab === "general"} onClick={() => setTab("general")}>
@@ -305,6 +305,10 @@ export function SettingsDialog({
           </button>
         </div>
 
+        {/* Tab content scrolls inside the height-capped dialog — the tab row
+            and the save/reset footer stay reachable with long lists (the
+            Models tab renders one row per discovered model). */}
+        <div className="min-h-0 flex-1 overflow-y-auto">
         {tab === "general" ? (
           <div className="space-y-4">
             {/* Base URL */}
@@ -660,6 +664,7 @@ export function SettingsDialog({
             )}
           </div>
         )}
+        </div>
 
         <div className="mt-5 flex items-center justify-between">
           <button
