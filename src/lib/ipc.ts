@@ -327,14 +327,21 @@ export function testMcpServer(command: string): Promise<McpTestResult> {
   return invoke<McpTestResult>("test_mcp_server", { command });
 }
 
-// -- OpenWebUI tools (§6.5b) --------------------------------------------------
+// -- OpenWebUI tools + Functions (§6.5b/§6.5d) --------------------------------
+
+/** Synthetic endpoint behind Pipe pseudo-models (mirrors the backend
+ * constant in `owui.rs`). */
+export const PIPE_ENDPOINT = "ep_ternion_pipes";
 
 export interface OwuiTool {
   id: string;
   name: string;
-  /** Raw Python `class Tools` manifest source. */
+  /** Raw Python manifest source. */
   source: string;
   enabled: boolean;
+  /** 'tools' (Skills — model-callable methods), 'filter' (inlet middleware)
+   * or 'pipe' (a pseudo-model) — the OpenWebUI manifest kind (§6.5d). */
+  kind: "tools" | "filter" | "pipe";
 }
 
 export interface OwuiTestResult {

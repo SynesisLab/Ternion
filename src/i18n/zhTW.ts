@@ -140,14 +140,23 @@ export const zhTW: Record<I18nKey, string> = {
   "settings.mcp.testing": "…",
   "settings.mcp.tools": "個工具",
 
-  "settings.owui.title": "OpenWebUI 工具",
+  "settings.owui.title": "OpenWebUI 工具與 Functions",
   "settings.owui.hint":
-    "貼上 OpenWebUI Tools 資訊清單（Python class Tools）。其方法會以 owui__<名稱>__<方法> 呼叫本機 Python 執行，並在每次呼叫前徵求核准。",
+    "貼上 OpenWebUI 資訊清單（Python）。Tools（Skills）的方法會以 owui__<名稱>__<方法> 呼叫本機 Python 執行，並在每次呼叫前徵求核准。Filter 在每次送出前執行 inlet 轉換（盡力而為）；Pipe 會作為模型出現在選單。",
   "settings.owui.none": "尚未設定任何資訊清單。",
   "settings.owui.add": "新增資訊清單",
   "settings.owui.name": "名稱",
   "settings.owui.namePlaceholder": "天氣工具",
+  "settings.owui.kind": "類型",
+  "settings.owui.kindTools": "Tools",
+  "settings.owui.kindFilter": "Filter",
+  "settings.owui.kindPipe": "Pipe",
+  "settings.owui.previewFilter": "每次送出前執行 inlet",
   "settings.owui.sourcePlaceholder": "class Tools:\n    def get_weather(self, city: str) -> str:\n        \"\"\"Get the weather for a city.\"\"\"\n        return \"sunny\"",
+  "settings.owui.sourceFilterPlaceholder":
+    "class Filter:\n    def inlet(self, body: dict) -> dict:\n        body[\"messages\"].append(\n            {\"role\": \"system\", \"content\": \"一律用英文回答。\"}\n        )\n        return body",
+  "settings.owui.sourcePipePlaceholder":
+    "class Pipe:\n    def pipe(self, user_message: str, model_id: str, messages: list, body: dict) -> str:\n        return \"hello \" + user_message",
   "settings.owui.test": "測試",
   "settings.owui.testing": "…",
   "settings.owui.tools": "個方法",

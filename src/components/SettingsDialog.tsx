@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import {
+  PIPE_ENDPOINT,
   clearEndpointApiKey,
   clearModelRecord,
   clearSessionPermissions,
@@ -1338,13 +1339,15 @@ function McpTab() {
   );
 }
 
-/** OpenWebUI "Tools" manifests (§6.5b): raw Python `class Tools` sources.
- * Their public methods merge into chat as owui__<name>__<method> and gate
- * like MCP tools — ask per call until an "always" grant is set. */
+/** OpenWebUI manifests (§6.5b/§6.5d): raw Python sources of three kinds —
+ * Tools (Skills; their methods merge into chat as owui__<name>__<method> and
+ * gate like MCP tools), Filters (a best-effort inlet transform before every
+ * send) and Pipes (selected as models). */
 function OwuiToolsSection() {
   const [tools, setTools] = useState<OwuiTool[]>([]);
   const [addOpen, setAddOpen] = useState(false);
   const [newName, setNewName] = useState("");
+  const [newKind, setNewKind] = useState<OwuiTool["kind"]>("tools");
   const [newSource, setNewSource] = useState("");
   const [testResults, setTestResults] = useState<Record<string, OwuiTestResult>>({});
   const [testing, setTesting] = useState<Record<string, boolean>>({});
@@ -1381,9 +1384,11 @@ function OwuiToolsSection() {
         name: newName.trim(),
         source: newSource,
         enabled: true,
+        kind: newKind,
       });
       setNewName("");
       setNewSource("");
+      setNewKind("tools");
       setAddOpen(false);
       await reload();
     } catch (e) {
@@ -1400,6 +1405,19 @@ function OwuiToolsSection() {
     await deleteOwuiTool(tool.id).catch(() => {});
     await reload();
   };
+
+  const placeholder =
+    newKind === "filter"
+      ? t("settings.owui.sourceFilterPlaceholder")
+      : newKind === "pipe"
+        ? t("settings.owui.sourcePipePlaceholder")
+        : t("settings.owui.sourcePlaceholder");
+
+  const kindOptions: { value: OwuiTool["kind"]; label: string }[] = [
+    { value: "tools", label: t("settings.owui.kindTools") },
+    { value: "filter", label: t("settings.owui.kindFilter") },
+    { value: "pipe", label: t("settings.owui.kindPipe") },
+  ];
 
   return (
     <div className="space-y-3 border-t border-[color:var(--color-edge)] pt-3">
@@ -1423,8 +1441,15 @@ function OwuiToolsSection() {
             <div key={tool.id} className="space-y-1.5 px-3 py-2.5">
               <div className="flex items-center justify-between gap-2">
                 <div className="min-w-0">
-                  <div className="truncate text-sm text-[color:var(--color-ink)]">
-                    {tool.name}
+                  <div className="flex items-center gap-2">
+                    {tool.kind !== "tools" && (
+                      <span className="shrink-0 rounded border border-[color:var(--color-edge)] px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-[color:var(--color-muted)]">
+                        {tool.kind}
+                      </span>
+                    )}
+                    <div className="truncate text-sm text-[color:var(--color-ink)]">
+                      {tool.name}
+                    </div>
                   </div>
                   <div className="truncate font-mono text-xs text-[color:var(--color-muted)]">
                     {firstLine}
@@ -1483,6 +1508,22 @@ function OwuiToolsSection() {
 
       {addOpen ? (
         <div className="space-y-2 rounded-lg border border-[color:var(--color-edge)] p-3">
+          <div className="flex items-center gap-2">
+            {kindOptions.map((k) => (
+              <button
+                key={k.value}
+                type="button"
+                onClick={() => setNewKind(k.value)}
+                className={`rounded-lg border px-2.5 py-1 text-xs ${
+                  newKind === k.value
+                    ? "border-[color:var(--color-accent)] text-[color:var(--color-accent)]"
+                    : "border-[color:var(--color-edge)] text-[color:var(--color-muted)] hover:text-[color:var(--color-ink)]"
+                }`}
+              >
+                {k.label}
+              </button>
+            ))}
+          </div>
           <div className="grid grid-cols-2 gap-2">
             <label className="block">
               <span className="mb-1 block text-[11px] font-medium text-[color:var(--color-muted)]">
@@ -1497,13 +1538,15 @@ function OwuiToolsSection() {
               />
             </label>
             <div className="flex items-end pb-0.5 text-[11px] text-[color:var(--color-muted)]">
-              owui__{sanitizePreview(newName)}__&lt;method&gt;
+              {newKind === "tools" && <>owui__{sanitizePreview(newName)}__&lt;method&gt;</>}
+              {newKind === "filter" && <>{t("settings.owui.previewFilter")}</>}
+              {newKind === "pipe" && <>pipe__{sanitizePreview(newName)}@{PIPE_ENDPOINT}</>}
             </div>
           </div>
           <textarea
             value={newSource}
             onChange={(e) => setNewSource(e.target.value)}
-            placeholder={t("settings.owui.sourcePlaceholder")}
+            placeholder={placeholder}
             rows={8}
             className="w-full rounded-lg border border-[color:var(--color-edge)] bg-[color:var(--color-bg)] px-2.5 py-1.5 font-mono text-xs outline-none focus:border-[color:var(--color-accent)]"
           />

@@ -134,14 +134,23 @@ export const en = {
   "settings.mcp.testing": "…",
   "settings.mcp.tools": "tools",
 
-  "settings.owui.title": "OpenWebUI tools",
+  "settings.owui.title": "OpenWebUI tools & Functions",
   "settings.owui.hint":
-    "Paste OpenWebUI Tools manifests (Python class Tools). Their methods appear as owui__<name>__<method>, run through a local Python, and ask for approval per call.",
+    "Paste OpenWebUI manifests (Python). Tools (Skills) expose their methods as owui__<name>__<method>, run through a local Python, and ask for approval per call. Filters run an inlet transform before every send (best-effort). Pipes are selectable as models.",
   "settings.owui.none": "No manifests configured yet.",
   "settings.owui.add": "Add manifest",
   "settings.owui.name": "Name",
   "settings.owui.namePlaceholder": "Weather Tools",
+  "settings.owui.kind": "Kind",
+  "settings.owui.kindTools": "Tools",
+  "settings.owui.kindFilter": "Filter",
+  "settings.owui.kindPipe": "Pipe",
+  "settings.owui.previewFilter": "inlet runs before every send",
   "settings.owui.sourcePlaceholder": "class Tools:\n    def get_weather(self, city: str) -> str:\n        \"\"\"Get the weather for a city.\"\"\"\n        return \"sunny\"",
+  "settings.owui.sourceFilterPlaceholder":
+    "class Filter:\n    def inlet(self, body: dict) -> dict:\n        body[\"messages\"].append(\n            {\"role\": \"system\", \"content\": \"Always answer in English.\"}\n        )\n        return body",
+  "settings.owui.sourcePipePlaceholder":
+    "class Pipe:\n    def pipe(self, user_message: str, model_id: str, messages: list, body: dict) -> str:\n        return \"hello \" + user_message",
   "settings.owui.test": "Test",
   "settings.owui.testing": "…",
   "settings.owui.tools": "methods",

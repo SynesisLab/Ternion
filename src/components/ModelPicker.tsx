@@ -1,4 +1,5 @@
 import { t } from "../i18n";
+import { PIPE_ENDPOINT } from "../lib/ipc";
 import type { ModelInfo } from "../types/chat";
 
 const BADGE_STYLES: Record<string, string> = {
@@ -70,7 +71,9 @@ export function ModelPicker({
         {!isExplicit && <option value="">{t("chat.pin.models")}…</option>}
         {models.map((m) => (
           <option key={m.id} value={m.id}>
-            {m.id}
+            {/* §6.5d: pipe pseudo-models show their manifest name — the
+                synthetic endpoint dimension is not a real endpoint. */}
+            {m.endpointId === PIPE_ENDPOINT ? m.displayName : m.id}
           </option>
         ))}
       </select>

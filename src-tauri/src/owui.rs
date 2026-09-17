@@ -1,21 +1,88 @@
-//! OpenWebUI Tools compatibility (design §6.5b, backlog): an OpenWebUI
-//! "Tools" manifest — a Python `class Tools` whose public methods are the
-//! tools — is parsed into OpenAI JSON-schema specs and merged namespaced
-//! `owui__<manifest>__<method>`, the same adapter shape as MCP servers, so
-//! the ecosystem's existing definitions load without core changes.
+//! OpenWebUI compatibility (design §6.5b/§6.5d): an OpenWebUI manifest — a
+//! Python class whose entry points Ternion maps onto its own surfaces — is
+//! parsed per use and executed through a generated shim (the manifest source
+//! with a small `__main__` block appended) run by a local Python
+//! interpreter. A missing interpreter surfaces as an error, not a crash.
 //!
-//! Execution shells the method out to a local Python interpreter through a
-//! generated runner (the manifest source with a small `__main__` block
-//! appended). A missing interpreter surfaces as a tool error, not a crash;
-//! every call gates through the §6.6 matrix (ask by default, grantable)
-//! like MCP tools.
+//! Three manifest kinds:
+//! - **Skills / Tools** (`class Tools`): every public method becomes a tool,
+//!   merged namespaced `owui__<manifest>__<method>` like MCP servers and
+//!   gated through the §6.6 matrix (ask by default, grantable).
+//! - **Filters** (`class Filter`, Functions): `inlet` (and optional
+//!   `outlet`) middleware — the inlet transforms the assembled request body
+//!   before the model sees it. Best-effort: a failing filter is skipped.
+//! - **Pipes** (`class Pipe`, Functions): the `pipe` method runs as a
+//!   pseudo-model behind a synthetic endpoint (`PIPE_ENDPOINT`).
 
 use crate::db::Database;
-use crate::types::ToolSpec;
+use crate::types::{ChatContent, ChatMessage, ChatRole, ToolSpec};
 
 /// Every OpenWebUI tool name starts with this prefix — the namespace that
 /// keeps a manifest's methods from shadowing bundled or MCP tools (§6.5b).
 pub const OWUI_PREFIX: &str = "owui__";
+
+/// Pipe pseudo-models (§6.5d) are surfaced as `pipe__<sanitized>@<PIPE_ENDPOINT>`
+/// — a bare `pipe__` prefix plus a synthetic endpoint id that
+/// `AppState::provider_for` special-cases. The prefix keeps them from ever
+/// colliding with real model names on real endpoints.
+pub const PIPE_PREFIX: &str = "pipe__";
+
+/// The synthetic endpoint every enabled Pipe manifest serves (§6.5d). Never
+/// probed, never listed among real endpoints; `provider_for` special-cases
+/// it.
+pub const PIPE_ENDPOINT: &str = "ep_ternion_pipes";
+
+/// Which surface a manifest exposes (§6.5d). Kinds key the stored row
+/// (`owui_tools.kind`) and the save-time validation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManifestKind {
+    /// `class Tools` — model-callable methods (OpenWebUI Skills).
+    Tools,
+    /// `class Filter` — inlet/outlet request middleware (Functions).
+    Filter,
+    /// `class Pipe` — a pseudo-model (Functions).
+    Pipe,
+}
+
+impl ManifestKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Tools => "tools",
+            Self::Filter => "filter",
+            Self::Pipe => "pipe",
+        }
+    }
+}
+
+/// Parse a stored kind string; unknown values fall back to `tools` (the
+/// original rows' semantics).
+pub fn parse_kind(kind: &str) -> ManifestKind {
+    match kind.trim().to_ascii_lowercase().as_str() {
+        "filter" => ManifestKind::Filter,
+        "pipe" => ManifestKind::Pipe,
+        _ => ManifestKind::Tools,
+    }
+}
+
+/// Detect a manifest's kind from its class name — `class Filter` / `class
+/// Pipe` anywhere in the source wins over the Tools default.
+pub fn detect_kind(source: &str) -> ManifestKind {
+    for line in source.replace("\r\n", "\n").lines() {
+        let Some(rest) = line.trim_start().strip_prefix("class ") else {
+            continue;
+        };
+        match rest
+            .split(|c: char| c == '(' || c == ':' || c.is_whitespace())
+            .next()
+            .unwrap_or("")
+        {
+            "Filter" => return ManifestKind::Filter,
+            "Pipe" => return ManifestKind::Pipe,
+            _ => {}
+        }
+    }
+    ManifestKind::Tools
+}
 
 const CALL_TIMEOUT_MS: u64 = 120_000;
 const PROBE_TIMEOUT_MS: u64 = 5_000;
@@ -66,47 +133,9 @@ pub fn parse_manifest(source: &str) -> Result<Vec<OwuiMethod>, String> {
     let normalized = source.replace("\r\n", "\n");
     let lines: Vec<&str> = normalized.lines().collect();
 
-    // The tool class: `class Tools` per the convention, else the first
-    // class in the file.
-    let mut class_idx: Option<(usize, usize)> = None; // (line, indent)
-    for (i, line) in lines.iter().enumerate() {
-        let Some(rest) = line.strip_prefix("class ") else {
-            continue;
-        };
-        let indent = line.len() - line.trim_start().len();
-        let name = rest
-            .split(|c: char| c == '(' || c == ':' || c.is_whitespace())
-            .next()
-            .unwrap_or("");
-        if name == "Tools" {
-            class_idx = Some((i, indent));
-            break;
-        }
-        if class_idx.is_none() {
-            class_idx = Some((i, indent));
-        }
-    }
-    let Some((class_idx, class_indent)) = class_idx else {
-        return Err("no Python class found in the manifest".into());
-    };
+    let (class_idx, class_indent) = find_class_preferred(&lines, "Tools")?;
 
-    // Method candidates: def lines indented deeper than the class. The
-    // shallowest indent level is the method level — deeper defs are nested
-    // helpers inside method bodies.
-    let mut defs: Vec<(usize, usize)> = Vec::new();
-    for (i, line) in lines.iter().enumerate().skip(class_idx + 1) {
-        let trimmed = line.trim_start();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        if !trimmed.starts_with("def ") {
-            continue;
-        }
-        let indent = line.len() - trimmed.len();
-        if indent > class_indent {
-            defs.push((i, indent));
-        }
-    }
+    let defs = method_defs(&lines, class_idx, class_indent);
     let method_indent = defs.iter().map(|(_, ind)| *ind).min();
     let Some(method_indent) = method_indent else {
         return Err("the class defines no public tool methods".into());
@@ -138,6 +167,138 @@ pub fn parse_manifest(source: &str) -> Result<Vec<OwuiMethod>, String> {
         return Err("the class defines no public tool methods".into());
     }
     Ok(methods)
+}
+
+/// The class a Tools manifest's methods live in: `preferred` (the OpenWebUI
+/// convention) when present, else the first class in the file. (line, indent).
+fn find_class_preferred(lines: &[&str], preferred: &str) -> Result<(usize, usize), String> {
+    let mut first: Option<(usize, usize)> = None;
+    for (i, line) in lines.iter().enumerate() {
+        let Some(rest) = line.strip_prefix("class ") else {
+            continue;
+        };
+        let indent = line.len() - line.trim_start().len();
+        let name = rest
+            .split(|c: char| c == '(' || c == ':' || c.is_whitespace())
+            .next()
+            .unwrap_or("");
+        if name == preferred {
+            return Ok((i, indent));
+        }
+        if first.is_none() {
+            first = Some((i, indent));
+        }
+    }
+    first.ok_or_else(|| "no Python class found in the manifest".to_string())
+}
+
+/// The class line of an exact Functions manifest (`class Filter`, `class
+/// Pipe`) — unlike Tools there is no first-class fallback: the OpenWebUI
+/// convention name is required.
+fn find_class_named(lines: &[&str], name: &str) -> Option<(usize, usize)> {
+    for (i, line) in lines.iter().enumerate() {
+        let Some(rest) = line.trim_start().strip_prefix("class ") else {
+            continue;
+        };
+        let indent = line.len() - line.trim_start().len();
+        let class = rest
+            .split(|c: char| c == '(' || c == ':' || c.is_whitespace())
+            .next()
+            .unwrap_or("");
+        if class == name {
+            return Some((i, indent));
+        }
+    }
+    None
+}
+
+/// def lines of the class at (class_idx, class_indent), indented deeper than
+/// it — (line index, indent). Deeper defs inside method bodies are filtered
+/// later by the shallowest-indent rule.
+fn method_defs(lines: &[&str], class_idx: usize, class_indent: usize) -> Vec<(usize, usize)> {
+    let mut defs: Vec<(usize, usize)> = Vec::new();
+    for (i, line) in lines.iter().enumerate().skip(class_idx + 1) {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if !trimmed.starts_with("def ") {
+            continue;
+        }
+        let indent = line.len() - trimmed.len();
+        if indent > class_indent {
+            defs.push((i, indent));
+        }
+    }
+    defs
+}
+
+/// The entry points of an OpenWebUI Filter (§6.5d): `inlet` is required, the
+/// (not yet executed) `outlet` is optional.
+#[derive(Debug, Clone, Copy)]
+pub struct FilterManifest {
+    pub inlet: bool,
+    pub outlet: bool,
+}
+
+/// Parse an OpenWebUI Filter: a `class Filter` whose `inlet` method
+/// transforms the request body (the optional `outlet` is recognized but not
+/// executed — §6.5d v1 runs inlets only).
+pub fn parse_filter(source: &str) -> Result<FilterManifest, String> {
+    let normalized = source.replace("\r\n", "\n");
+    let lines: Vec<&str> = normalized.lines().collect();
+    let Some((class_idx, class_indent)) = find_class_named(&lines, "Filter") else {
+        return Err("no `class Filter` found in the manifest".into());
+    };
+    let defs = method_defs(&lines, class_idx, class_indent);
+    let method_indent = defs.iter().map(|(_, ind)| *ind).min();
+    let Some(method_indent) = method_indent else {
+        return Err("`class Filter` defines no methods".into());
+    };
+    let mut manifest = FilterManifest {
+        inlet: false,
+        outlet: false,
+    };
+    for (i, indent) in defs {
+        if indent != method_indent {
+            continue; // nested helper
+        }
+        match method_name(lines[i]).as_str() {
+            "inlet" => manifest.inlet = true,
+            "outlet" => manifest.outlet = true,
+            _ => {}
+        }
+    }
+    if !manifest.inlet {
+        return Err("a Filter needs an `inlet` method (OpenWebUI Functions format)".into());
+    }
+    Ok(manifest)
+}
+
+/// Validate an OpenWebUI Pipe (§6.5d): a `class Pipe` with a `pipe` method —
+/// the entry point that runs as a pseudo-model.
+pub fn parse_pipe(source: &str) -> Result<(), String> {
+    let normalized = source.replace("\r\n", "\n");
+    let lines: Vec<&str> = normalized.lines().collect();
+    let Some((class_idx, class_indent)) = find_class_named(&lines, "Pipe") else {
+        return Err("no `class Pipe` found in the manifest".into());
+    };
+    let defs = method_defs(&lines, class_idx, class_indent);
+    let method_indent = defs.iter().map(|(_, ind)| *ind).min();
+    let Some(method_indent) = method_indent else {
+        return Err("`class Pipe` defines no methods".into());
+    };
+    if !defs.iter().any(|(i, indent)| {
+        *indent == method_indent && method_name(lines[*i]) == "pipe"
+    }) {
+        return Err("a Pipe needs a `pipe` method (OpenWebUI Functions format)".into());
+    }
+    Ok(())
+}
+
+/// A Pipe manifest's pseudo-model id: `pipe__<sanitized name>`.
+pub fn pipe_ref(name: &str) -> String {
+    format!("{PIPE_PREFIX}{}", crate::mcp::sanitize_server_name(name))
 }
 
 /// The identifier after `def ` on a def line.
@@ -481,12 +642,14 @@ fn schema_of(m: &OwuiMethod) -> serde_json::Value {
     serde_json::json!({"type": "object", "properties": props, "required": required})
 }
 
-/// Specs for every enabled tool row; rows whose manifest no longer parses
-/// are skipped with a warning (same policy as failing MCP servers).
+/// Specs for every enabled Tools row (§6.5b); rows whose manifest no longer
+/// parses are skipped with a warning (same policy as failing MCP servers).
+/// Filters and Pipes are middleware/pseudo-models (§6.5d), not model-callable
+/// tools — their rows never merge into the tool surface.
 pub async fn enabled_specs(db: &Database) -> Vec<ToolSpec> {
     let rows = db.list_owui_tools().await.unwrap_or_default();
     let mut out = Vec::new();
-    for row in rows.iter().filter(|r| r.enabled) {
+    for row in rows.iter().filter(|r| r.enabled && r.kind == "tools") {
         match parse_manifest(&row.source) {
             Ok(methods) => out.extend(specs_for(&row.name, &methods)),
             Err(e) => log::warn!("owui: skipping tool `{}` — {e}", row.name),
@@ -497,8 +660,8 @@ pub async fn enabled_specs(db: &Database) -> Vec<ToolSpec> {
 
 // -- execution --------------------------------------------------------------
 
-/// Appended to the manifest source: dispatches argv[2] on `class Tools`
-/// with argv[1] (JSON object) as keyword arguments, printing the result.
+/// Appended to a Tools manifest: dispatches argv[2] on `class Tools` with
+/// argv[1] (JSON object) as keyword arguments, printing the result.
 const RUNNER: &str = r#"
 
 # --- Ternion tool runner (appended) ---
@@ -516,8 +679,94 @@ if __name__ == "__main__":
     _tsys.stdout.write(str(_out))
 "#;
 
-fn shim_source(manifest_source: &str) -> String {
-    format!("{}{}", manifest_source.trim_end(), RUNNER)
+/// Appended to a Filter manifest (§6.5d): dispatches argv[2] on the class
+/// named argv[3] with argv[1] (the body JSON) as its single positional
+/// argument — the OpenWebUI Functions calling convention — and prints the
+/// result JSON-serialized. An empty output means the function returned
+/// None: the OpenWebUI convention for "no change".
+const FUNCTION_RUNNER: &str = r#"
+
+# --- Ternion function runner (appended) ---
+import json as _fjson
+import sys as _fsys
+
+if __name__ == "__main__":
+    _args = _fjson.loads(_fsys.argv[1]) if len(_fsys.argv) > 1 else {}
+    _cls = globals().get(_fsys.argv[3])
+    if _cls is None:
+        _fsys.stderr.write("no class " + _fsys.argv[3])
+        raise SystemExit(3)
+    _inst = _cls()
+    _fn = getattr(_inst, _fsys.argv[2], None)
+    if _fn is None:
+        _fsys.stderr.write("unknown method " + _fsys.argv[2])
+        raise SystemExit(3)
+    _out = _fn(_args)
+    _fsys.stdout.write("" if _out is None else _fjson.dumps(_out))
+"#;
+
+/// Appended to a Pipe manifest (§6.5d): calls `pipe(*args)` where argv[1] is
+/// a JSON array of the OpenWebUI Pipe's positional arguments —
+/// `[user_message, model_id, messages, body]`. The result prints verbatim
+/// (pipes return the answer text; None means no output).
+const PIPE_RUNNER: &str = r#"
+
+# --- Ternion pipe runner (appended) ---
+import json as _pjson
+import sys as _psys
+
+if __name__ == "__main__":
+    _args = _pjson.loads(_psys.argv[1]) if len(_psys.argv) > 1 else []
+    if not isinstance(_args, list):
+        _args = [_args]
+    _cls = globals().get("Pipe")
+    if _cls is None:
+        _psys.stderr.write("no class Pipe")
+        raise SystemExit(3)
+    _inst = _cls()
+    _fn = getattr(_inst, "pipe", None)
+    if _fn is None:
+        _psys.stderr.write("unknown method pipe")
+        raise SystemExit(3)
+    _out = _fn(*_args)
+    _psys.stdout.write("" if _out is None else str(_out))
+"#;
+
+fn shim_source(manifest_source: &str, runner: &str) -> String {
+    format!("{}{}", manifest_source.trim_end(), runner)
+}
+
+/// Write a shim to a unique temp file, run it with `extra` appended after
+/// the script path, collect the output with a hard kill on timeout, and
+/// remove the file. The `stem` keeps temp names readable per caller.
+async fn run_shim(
+    stem: &str,
+    source: &str,
+    runner: &str,
+    extra: Vec<String>,
+    timeout_ms: u64,
+) -> Result<(String, String, Option<i32>), String> {
+    // Unique per-call temp file — two calls of one manifest never collide,
+    // and each call's copy is removed after the run.
+    let dir = std::env::temp_dir().join("ternion-owui");
+    let _ = tokio::fs::create_dir_all(&dir).await;
+    let path = dir.join(format!("{stem}-{}.py", crate::ids::new_id()));
+    if let Err(e) = tokio::fs::write(&path, shim_source(source, runner)).await {
+        return Err(format!("script write failed: {e}"));
+    }
+    let script = path.to_string_lossy().to_string();
+    let mut argv = vec![script];
+    argv.extend(extra);
+    let child = match spawn_python(argv) {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = tokio::fs::remove_file(&path).await;
+            return Err(e);
+        }
+    };
+    let (out, err, code) = collect(child, timeout_ms).await;
+    let _ = tokio::fs::remove_file(&path).await;
+    Ok((out, err, code))
 }
 
 /// Interpreters on this machine, most likely first. Windows ships the `py`
@@ -627,6 +876,13 @@ pub async fn call(
     else {
         return Err(format!("no enabled OpenWebUI tool named `{manifest}`"));
     };
+    if row.kind != "tools" {
+        return Err(format!(
+            "`{}` is a {} manifest, not a tool",
+            row.name,
+            row.kind
+        ));
+    }
     let methods = parse_manifest(&row.source)
         .map_err(|e| format!("manifest `{}`: {e}", row.name))?;
     if !methods.iter().any(|m| m.name == method) {
@@ -634,25 +890,8 @@ pub async fn call(
     }
 
     let args_json = serde_json::to_string(&args).unwrap_or_else(|_| "{}".into());
-    // Unique per-call temp file — two calls of one tool never collide, and
-    // each call's copy is removed after the run.
-    let dir = std::env::temp_dir().join("ternion-owui");
-    let _ = tokio::fs::create_dir_all(&dir).await;
-    let path = dir.join(format!("{}-{}.py", row.id, crate::ids::new_id()));
-    if let Err(e) = tokio::fs::write(&path, shim_source(&row.source)).await {
-        return Err(format!("owui script write failed: {e}"));
-    }
-    let script = path.to_string_lossy().to_string();
-    let extra = vec![script, args_json, method];
-    let child = spawn_python(extra);
-    let (out, err, code) = match child {
-        Ok(c) => collect(c, CALL_TIMEOUT_MS).await,
-        Err(e) => {
-            let _ = tokio::fs::remove_file(&path).await;
-            return Err(e);
-        }
-    };
-    let _ = tokio::fs::remove_file(&path).await;
+    let extra = vec![args_json, method];
+    let (out, err, code) = run_shim(&row.id, &row.source, RUNNER, extra, CALL_TIMEOUT_MS).await?;
     match code {
         Some(0) if out.trim().is_empty() => Ok("(empty result)".to_string()),
         Some(0) => Ok(out.trim().to_string()),
@@ -668,21 +907,431 @@ pub async fn call(
     }
 }
 
-/// Parse a manifest and probe for a usable interpreter — the Save-dialog
-/// test. Tool names are surfaced even when no interpreter exists, so the
-/// user can see what would load.
-pub async fn test_connect(source: &str) -> crate::types::OwuiTestResult {
-    let tools = match parse_manifest(source) {
-        Ok(methods) => methods.into_iter().map(|m| m.name).collect::<Vec<_>>(),
-        Err(e) => {
-            return crate::types::OwuiTestResult {
-                ok: false,
-                latency_ms: 0,
-                tools: Vec::new(),
-                error: Some(e),
+/// Run one OpenWebUI Function (§6.5d): a Filter's inlet/outlet dispatched on
+/// `class Filter` with the body JSON as its positional argument. Returns the
+/// JSON-serialized result; empty output means the function returned None
+/// (no change). Pipes go through [`run_pipe`] — their positional-argument
+/// convention differs.
+async fn run_function(source: &str, method: &str, body_json: String) -> Result<String, String> {
+    let extra = vec![body_json, method.to_string(), "Filter".to_string()];
+    let (out, err, code) =
+        run_shim("filter", source.trim_end(), FUNCTION_RUNNER, extra, CALL_TIMEOUT_MS).await?;
+    match code {
+        Some(0) => Ok(out.trim().to_string()),
+        Some(c) => {
+            let err = err.trim();
+            if err.is_empty() {
+                Err(format!("filter `{method}` exited with code {c}"))
+            } else {
+                Err(format!("filter `{method}` failed: {err}"))
             }
         }
+        None => Err(format!("filter `{method}` timed out")),
+    }
+}
+
+// -- Filters (§6.5d): inlet middleware --------------------------------------
+
+/// The role name an inlet body carries for a `ChatRole`.
+fn role_name(role: ChatRole) -> &'static str {
+    match role {
+        ChatRole::System => "system",
+        ChatRole::User => "user",
+        ChatRole::Assistant => "assistant",
+        ChatRole::Tool => "tool",
+    }
+}
+
+/// Flattened text of a message's content — the inlet body's `content` shape
+/// (filters receive strings; image parts contribute a placeholder).
+fn flatten_parts(content: &ChatContent) -> String {
+    match content {
+        ChatContent::Text(t) => t.clone(),
+        ChatContent::Parts(parts) => {
+            let mut out = String::new();
+            for part in parts {
+                match part {
+                    crate::types::ContentPart::Text { text } => {
+                        if !out.is_empty() {
+                            out.push_str("\n\n");
+                        }
+                        out.push_str(text);
+                    }
+                    crate::types::ContentPart::Image { .. } => {
+                        if !out.is_empty() {
+                            out.push_str("\n\n");
+                        }
+                        out.push_str("[image attachment]");
+                    }
+                }
+            }
+            out
+        }
+    }
+}
+
+/// The inlet body's `messages` view (§6.5d): plain `{role, content}` string
+/// objects — what an OpenWebUI filter sees.
+fn inlet_messages_view(messages: &[ChatMessage]) -> Vec<serde_json::Value> {
+    messages
+        .iter()
+        .map(|m| {
+            serde_json::json!({
+                "role": role_name(m.role),
+                "content": flatten_parts(&m.content),
+            })
+        })
+        .collect()
+}
+
+/// The text a filter returned for one message: a string, or a parts array
+/// whose `text` items join (image parts contribute nothing).
+fn text_of(item: &serde_json::Value) -> Option<String> {
+    match item {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Array(items) => {
+            let mut out = String::new();
+            for it in items {
+                if it.get("type").and_then(|t| t.as_str()) == Some("text") {
+                    if let Some(text) = it.get("text").and_then(|t| t.as_str()) {
+                        if !out.is_empty() {
+                            out.push_str("\n\n");
+                        }
+                        out.push_str(text);
+                    }
+                }
+            }
+            Some(out)
+        }
+        _ => None,
+    }
+}
+
+/// Apply one filter's returned body to the message list (§6.5d), kept
+/// deliberately narrow — a filter may edit message contents in place and
+/// append new tail messages, but never restructure history:
+/// - in-place edits apply to system/user messages only — assistant/tool rows
+///   carry the tool-call pairing the providers validate, so their rewrites
+///   pass through untouched;
+/// - appended tail messages (system/user) join the end;
+/// - removals, reorders, and role changes are ignored with a warning.
+/// The `model` key of a returned body is out of scope (v1).
+fn apply_inlet_result(
+    messages: &mut Vec<ChatMessage>,
+    result: &serde_json::Map<String, serde_json::Value>,
+    name: &str,
+) {
+    let Some(new) = result.get("messages").and_then(|v| v.as_array()) else {
+        return;
     };
+    if new.len() < messages.len() {
+        log::warn!("owui filter `{name}` removed messages; ignored");
+        return;
+    }
+    for (i, msg) in messages.iter_mut().enumerate() {
+        let Some(item) = new.get(i) else { break };
+        let role = item.get("role").and_then(|r| r.as_str());
+        if role != Some(role_name(msg.role)) {
+            log::warn!("owui filter `{name}` changed message {i}'s role; ignored");
+            return;
+        }
+        if !matches!(msg.role, ChatRole::System | ChatRole::User) {
+            continue;
+        }
+        let Some(text) = item.get("content").and_then(text_of) else {
+            continue;
+        };
+        if text == flatten_parts(&msg.content) {
+            continue; // unchanged — keep the original (image parts survive)
+        }
+        msg.content = ChatContent::Text(text);
+    }
+    for item in new[messages.len()..].iter() {
+        let Some(text) = item.get("content").and_then(|c| c.as_str()) else {
+            continue;
+        };
+        let role = match item.get("role").and_then(|r| r.as_str()) {
+            Some("system") => ChatRole::System,
+            Some("user") => ChatRole::User,
+            other => {
+                log::warn!(
+                    "owui filter `{name}` appended a `{}` message; ignored",
+                    other.unwrap_or("unnamed")
+                );
+                continue;
+            }
+        };
+        messages.push(ChatMessage {
+            id: crate::ids::new_id(),
+            role,
+            content: ChatContent::Text(text.to_string()),
+            tool_calls: None,
+            tool_call_id: None,
+            tool_name: None,
+        });
+    }
+}
+
+/// §6.5d: run every enabled Filter's `inlet` over the assembled request
+/// body, in stored order — each filter sees the previous filter's output.
+/// Best-effort like compression: a missing interpreter, a failing or
+/// non-conforming filter logs a warning and is skipped; it never blocks the
+/// send.
+pub async fn run_inlets(db: &Database, model_ref: &str, messages: &mut Vec<ChatMessage>) {
+    let rows = db.list_owui_tools().await.unwrap_or_default();
+    for row in rows.iter().filter(|r| r.enabled && r.kind == "filter") {
+        if let Err(e) = parse_filter(&row.source) {
+            log::warn!("owui filter `{}` skipped: {e}", row.name);
+            continue;
+        }
+        let body = serde_json::json!({
+            "model": model_ref,
+            "messages": inlet_messages_view(messages),
+        })
+        .to_string();
+        let out = match run_function(&row.source, "inlet", body).await {
+            Ok(out) => out,
+            Err(e) => {
+                log::warn!("owui filter `{}` inlet failed: {e}", row.name);
+                continue;
+            }
+        };
+        if out.is_empty() {
+            continue; // returned None — the OpenWebUI convention for no change
+        }
+        let Ok(serde_json::Value::Object(result)) = serde_json::from_str(&out) else {
+            log::warn!(
+                "owui filter `{}` inlet returned a non-object; ignored",
+                row.name
+            );
+            continue;
+        };
+        apply_inlet_result(messages, &result, &row.name);
+    }
+}
+
+// -- Pipes (§6.5d): pseudo-models -------------------------------------------
+
+const PIPE_TIMEOUT_MS: u64 = 300_000;
+
+/// Run a Pipe manifest's `pipe` method (§6.5d) with the OpenWebUI positional
+/// convention — `pipe(user_message, model_id, messages, body)` — and return
+/// its printed output (the answer text; empty means the pipe returned None).
+async fn run_pipe(source: &str, args_json: &str) -> Result<String, String> {
+    let extra = vec![args_json.to_string()];
+    let (out, err, code) = run_shim("pipe", source.trim_end(), PIPE_RUNNER, extra, PIPE_TIMEOUT_MS).await?;
+    match code {
+        Some(0) => Ok(out),
+        Some(c) => {
+            let err = err.trim();
+            if err.is_empty() {
+                Err(format!("pipe exited with code {c}"))
+            } else {
+                Err(format!("pipe failed: {err}"))
+            }
+        }
+        None => Err("pipe call timed out".into()),
+    }
+}
+
+/// Slice a pipe's finished output into delta-sized chunks so the UI's
+/// incremental rendering stays honest — the whole text is known up front.
+const PIPE_CHUNK_CHARS: usize = 512;
+
+/// A Pipe pseudo-model (§6.5d): an enabled `class Pipe` manifest runs as if
+/// it were a model — `AppState::provider_for(PIPE_ENDPOINT)` hands the
+/// request here, the `pipe` method runs through the Python shim, and its
+/// result streams as text chunks. A local process produces its whole output
+/// before Ternion sees any of it, so the text arrives in a burst at the end;
+/// token usage is unknown. Cancellation is honored between chunks.
+pub struct PipeProvider {
+    db: Database,
+}
+
+impl PipeProvider {
+    pub fn new(db: Database) -> Self {
+        Self { db }
+    }
+}
+
+impl crate::providers::Provider for PipeProvider {
+    fn id(&self) -> &str {
+        PIPE_ENDPOINT
+    }
+
+    fn kind(&self) -> crate::providers::EndpointKind {
+        crate::providers::EndpointKind::Ollama
+    }
+
+    /// Pipe discovery: the enabled Pipe manifests' display names.
+    fn list_models(
+        &self,
+    ) -> futures::future::BoxFuture<'_, Result<Vec<crate::types::ModelInfo>, crate::providers::ProviderError>>
+    {
+        let db = self.db.clone();
+        Box::pin(async move {
+            let rows = db.list_owui_tools().await.map_err(|e| {
+                crate::providers::ProviderError::Malformed(format!("pipe lookup failed: {e}"))
+            })?;
+            Ok(rows
+                .iter()
+                .filter(|r| r.enabled && r.kind == "pipe")
+                .map(|r| crate::types::ModelInfo {
+                    id: pipe_ref(&r.name),
+                    display_name: r.name.clone(),
+                    endpoint_id: PIPE_ENDPOINT.to_string(),
+                    size_bytes: None,
+                    parameter_size: None,
+                    quantization_level: None,
+                    family: Some("openwebui-pipe".to_string()),
+                    context_length: None,
+                    capabilities: Vec::new(),
+                })
+                .collect())
+        })
+    }
+
+    fn chat(
+        &self,
+        req: crate::types::ChatRequest,
+        events: tokio::sync::mpsc::Sender<crate::types::StreamEvent>,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> futures::future::BoxFuture<'_, ()> {
+        let db = self.db.clone();
+        Box::pin(async move {
+            use crate::types::StreamEvent;
+            let _ = events
+                .send(StreamEvent::Status {
+                    phase: crate::types::StatusPhase::Connecting,
+                })
+                .await;
+            let bare = req
+                .model
+                .strip_prefix(PIPE_PREFIX)
+                .unwrap_or(&req.model)
+                .to_string();
+            let rows = db.list_owui_tools().await.unwrap_or_default();
+            let Some(row) = rows
+                .into_iter()
+                .find(|r| r.enabled && r.kind == "pipe" && crate::mcp::sanitize_server_name(&r.name) == bare)
+            else {
+                let _ = events
+                    .send(StreamEvent::Error {
+                        code: "pipe".into(),
+                        message: format!("no enabled OpenWebUI pipe named `{bare}`"),
+                        retryable: false,
+                    })
+                    .await;
+                return;
+            };
+            let user_message = req
+                .messages
+                .iter()
+                .rev()
+                .find(|m| m.role == ChatRole::User)
+                .map(|m| flatten_parts(&m.content))
+                .unwrap_or_default();
+            let body = serde_json::json!({
+                "model": req.model,
+                "messages": inlet_messages_view(&req.messages),
+            });
+            // The OpenWebUI Pipe convention: positional (user_message,
+            // model_id, messages, body). model_id stays empty — Ternion v1
+            // exposes one entry point per manifest, no pipe-internal
+            // sub-model selection.
+            let args = serde_json::json!([
+                user_message,
+                "",
+                inlet_messages_view(&req.messages),
+                body,
+            ])
+            .to_string();
+            let result = run_pipe(&row.source, &args).await;
+            if cancel.is_cancelled() {
+                return;
+            }
+            match result {
+                Ok(text) => {
+                    for chunk in slice_chunks(&text, PIPE_CHUNK_CHARS) {
+                        if cancel.is_cancelled() {
+                            return;
+                        }
+                        if events
+                            .send(StreamEvent::TextDelta { text: chunk.to_string() })
+                            .await
+                            .is_err()
+                        {
+                            return; // the consumer is gone — stop
+                        }
+                    }
+                    let _ = events.send(StreamEvent::Done).await;
+                }
+                Err(e) => {
+                    let _ = events
+                        .send(StreamEvent::Error {
+                            code: "pipe".into(),
+                            message: e,
+                            retryable: false,
+                        })
+                        .await;
+                }
+            }
+        })
+    }
+}
+
+/// UTF-8-safe chunks of at most `max` chars — never splits a codepoint.
+fn slice_chunks(text: &str, max: usize) -> Vec<&str> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut start = 0;
+    while start < text.len() {
+        let end = (start + max).min(text.len());
+        let mut end = end;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        out.push(&text[start..end]);
+        start = end;
+    }
+    out
+}
+
+/// Parse a manifest and probe for a usable interpreter — the Save-dialog
+/// test. Entry points are surfaced even when no interpreter exists, so the
+/// user can see what would load once one is available.
+pub async fn test_connect(source: &str) -> crate::types::OwuiTestResult {
+    fn failure(error: String) -> crate::types::OwuiTestResult {
+        crate::types::OwuiTestResult {
+            ok: false,
+            latency_ms: 0,
+            tools: Vec::new(),
+            error: Some(error),
+        }
+    }
+    let entry_points = match detect_kind(source) {
+        ManifestKind::Filter => match parse_filter(source) {
+            Ok(f) => {
+                let mut v = vec!["inlet".to_string()];
+                if f.outlet {
+                    v.push("outlet".to_string());
+                }
+                v
+            }
+            Err(e) => return failure(e),
+        },
+        ManifestKind::Pipe => match parse_pipe(source) {
+            Ok(()) => vec!["pipe".to_string()],
+            Err(e) => return failure(e),
+        },
+        ManifestKind::Tools => match parse_manifest(source) {
+            Ok(methods) => methods.into_iter().map(|m| m.name).collect::<Vec<_>>(),
+            Err(e) => return failure(e),
+        },
+    };
+    let tools = entry_points;
     let started = std::time::Instant::now();
     let extra = vec!["-c".to_string(), "print('ok')".to_string()];
     match spawn_python(extra) {
@@ -836,17 +1485,268 @@ class Tools:
 
     #[test]
     fn shim_appends_the_runner() {
-        let shim = shim_source("class Tools:\n    pass\n");
+        let shim = shim_source("class Tools:\n    pass\n", RUNNER);
         assert!(shim.starts_with("class Tools:"));
         assert!(shim.contains("_fn(**_args)"));
         assert!(shim.contains("Ternion tool runner"));
     }
 
+    const FILTER_SAMPLE: &str = r#"
+class Filter:
+    def inlet(self, body: dict) -> dict:
+        body["messages"].append({"role": "system", "content": "be brief"})
+        return body
+
+    def outlet(self, body: dict) -> dict:
+        return body
+
+    def _helper(self, x: int) -> int:
+        return x
+"#;
+
+    #[test]
+    fn detect_kind_reads_the_class_name() {
+        assert_eq!(detect_kind(SAMPLE), ManifestKind::Tools);
+        assert_eq!(detect_kind(FILTER_SAMPLE), ManifestKind::Filter);
+        assert_eq!(detect_kind("class Pipe:\n    def pipe(self): ..."), ManifestKind::Pipe);
+        assert_eq!(detect_kind("class Foo:\n    pass\n"), ManifestKind::Tools);
+        assert_eq!(
+            parse_kind("Filter"),
+            ManifestKind::Filter,
+            "stored kinds parse case-insensitively"
+        );
+        assert_eq!(parse_kind("  tools "), ManifestKind::Tools);
+        assert_eq!(parse_kind("nonsense"), ManifestKind::Tools);
+    }
+
+    #[test]
+    fn parse_filter_finds_inlet_and_outlet() {
+        let f = parse_filter(FILTER_SAMPLE).unwrap();
+        assert!(f.inlet);
+        assert!(f.outlet);
+    }
+
+    #[test]
+    fn parse_filter_requires_the_filter_class_and_inlet() {
+        assert!(parse_filter("class Tools:\n    def inlet(self, body): return body\n").is_err());
+        assert!(parse_filter("class Filter:\n    def other(self, body): return body\n").is_err());
+    }
+
+    #[test]
+    fn parse_pipe_validates_the_pipe_method() {
+        assert!(parse_pipe("class Pipe:\n    def pipe(self, user_message: str, model_id: str, messages: list, body: dict) -> str:\n        return user_message\n").is_ok());
+        assert!(parse_pipe("class Pipe:\n    def other(self, x): return x\n").is_err());
+        assert!(parse_pipe("class Filter:\n    def pipe(self, m): return m\n").is_err());
+    }
+
+    #[test]
+    fn pipe_refs_are_namespaced_and_sanitized() {
+        assert_eq!(pipe_ref("My Pipe!"), "pipe__my-pipe");
+        assert_eq!(pipe_ref("天氣 Pipe"), "pipe__pipe", "CJK names keep their ascii tail");
+        assert_eq!(
+            parse_ref(&pipe_ref("Weather Tools")).map(|(m, _)| m),
+            None,
+            "pipe ids are not owui tool refs"
+        );
+    }
+
+    fn user_msg(text: &str) -> ChatMessage {
+        ChatMessage {
+            id: crate::ids::new_id(),
+            role: ChatRole::User,
+            content: ChatContent::Text(text.into()),
+            tool_calls: None,
+            tool_call_id: None,
+            tool_name: None,
+        }
+    }
+
+    fn apply(filter_out: &str, messages: &mut Vec<ChatMessage>) {
+        let serde_json::Value::Object(result) = serde_json::from_str(filter_out).unwrap() else {
+            panic!("test output is always an object");
+        };
+        apply_inlet_result(messages, &result, "f");
+    }
+
+    #[test]
+    fn inlet_edits_apply_to_system_and_user_in_place() {
+        let mut messages = vec![
+            ChatMessage {
+                id: "s1".into(),
+                role: ChatRole::System,
+                content: ChatContent::Text("be helpful".into()),
+                tool_calls: None,
+                tool_call_id: None,
+                tool_name: None,
+            },
+            user_msg("hi"),
+        ];
+        let view = inlet_messages_view(&messages);
+        let json = serde_json::json!([
+            {"role": "system", "content": "be helpful"},
+            {"role": "user", "content": "hello there"},
+        ]);
+        let out = serde_json::json!({"model": "m", "messages": json}).to_string();
+        apply(&out, &mut messages);
+        assert_eq!(
+            messages[0].content,
+            ChatContent::Text("be helpful".into()),
+            "unchanged system keeps its original"
+        );
+        assert_eq!(
+            messages[1].content,
+            ChatContent::Text("hello there".into()),
+            "edited user content applies"
+        );
+        // A filter's edit rides into the next filter's body view.
+        assert_eq!(
+            serde_json::to_value(inlet_messages_view(&messages)).unwrap()[1]["content"],
+            "hello there"
+        );
+    }
+
+    #[test]
+    fn inlet_appends_system_and_user_tails() {
+        let mut messages = vec![user_msg("hi")];
+        let out = serde_json::json!({
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "system", "content": "context: X"},
+                {"role": "user", "content": "remember Y"},
+            ]
+        })
+        .to_string();
+        apply(&out, &mut messages);
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[1].role, ChatRole::System);
+        assert_eq!(messages[2].content, ChatContent::Text("remember Y".into()));
+    }
+
+    #[test]
+    fn inlet_passes_assistant_rows_through_and_ignores_removals() {
+        let mut messages = vec![
+            user_msg("hi"),
+            ChatMessage {
+                id: "a1".into(),
+                role: ChatRole::Assistant,
+                content: ChatContent::Text("earlier answer".into()),
+                tool_calls: Some(Vec::new()),
+                tool_call_id: None,
+                tool_name: None,
+            },
+        ];
+        // Rewrite of the assistant row (dropping its tool_calls) and a
+        // shortened history both stay unapplied.
+        let out = serde_json::json!({
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "rewritten"},
+            ]
+        })
+        .to_string();
+        apply(&out, &mut messages);
+        assert_eq!(
+            messages[1].content,
+            ChatContent::Text("earlier answer".into()),
+            "assistant rows are ours, not the filter's"
+        );
+        assert!(messages[1].tool_calls.is_some());
+    }
+
+    #[test]
+    fn inlet_keeps_image_parts_when_unchanged() {
+        let mut messages = vec![ChatMessage {
+            id: "u1".into(),
+            role: ChatRole::User,
+            content: ChatContent::Parts(vec![
+                crate::types::ContentPart::Text { text: "look".into() },
+                crate::types::ContentPart::Image {
+                    attachment_id: "att".into(),
+                    mime: "image/png".into(),
+                    data_base64: None,
+                    processed_path: None,
+                },
+            ]),
+            tool_calls: None,
+            tool_call_id: None,
+            tool_name: None,
+        }];
+        let out = serde_json::json!({
+            "messages": [{"role": "user", "content": "look\n\n[image attachment]"}]
+        })
+        .to_string();
+        apply(&out, &mut messages);
+        assert!(
+            matches!(&messages[0].content, ChatContent::Parts(p) if p.len() == 2),
+            "an unchanged view leaves the original multimodal content in place"
+        );
+    }
+
+    #[test]
+    fn pipe_chunks_split_on_char_boundaries() {
+        let text = "é".repeat(1000); // 2 bytes per é — 512-byte cuts would split one
+        for chunk in slice_chunks(&text, 512) {
+            assert!(chunk.chars().all(|c| c == 'é'));
+            assert!(chunk.chars().count() <= 512);
+        }
+        assert_eq!(slice_chunks("", 512).len(), 0);
+        assert_eq!(slice_chunks("x", 512), vec!["x"]);
+    }
+
     #[tokio::test]
-    async fn test_connect_reports_parse_failures_without_python() {
-        let bad = test_connect("def broken(:").await;
-        assert!(!bad.ok);
-        assert!(bad.tools.is_empty());
-        assert!(bad.error.is_some());
+    async fn run_inlets_is_a_noop_for_missing_python_or_none_results() {
+        // A filter whose inlet returns None must never change anything —
+        // with or without a Python interpreter on the machine (both paths
+        // log and continue).
+        let (_dir, db) = crate::db::Database::test_db().await;
+        db.upsert_owui_tool(
+            crate::types::OwuiTool {
+                id: "f1".into(),
+                name: "Noop Filter".into(),
+                source: "class Filter:\n    def inlet(self, body): return None\n".into(),
+                enabled: true,
+                kind: "filter".into(),
+            },
+            crate::ids::now_ms(),
+        )
+        .await
+        .unwrap();
+        let mut messages = vec![user_msg("hello")];
+        run_inlets(&db, "pipe__x@ep_ternion_pipes", &mut messages).await;
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].content, ChatContent::Text("hello".into()));
+    }
+
+    #[tokio::test]
+    async fn enabled_specs_skip_filter_and_pipe_rows() {
+        let (_dir, db) = crate::db::Database::test_db().await;
+        let now = crate::ids::now_ms();
+        db.upsert_owui_tool(
+            crate::types::OwuiTool {
+                id: "t1".into(),
+                name: "Real Tools".into(),
+                source: SAMPLE.into(),
+                enabled: true,
+                kind: "tools".into(),
+            },
+            now,
+        )
+        .await
+        .unwrap();
+        db.upsert_owui_tool(
+            crate::types::OwuiTool {
+                id: "f1".into(),
+                name: "Some Filter".into(),
+                source: FILTER_SAMPLE.into(),
+                enabled: true,
+                kind: "filter".into(),
+            },
+            now,
+        )
+        .await
+        .unwrap();
+        let specs = enabled_specs(&db).await;
+        assert_eq!(specs.len(), 2, "only the Tools manifest's methods merge");
+        assert!(specs.iter().all(|s| s.name.starts_with("owui__")));
     }
 }

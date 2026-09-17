@@ -412,6 +412,11 @@ async fn stream_once(
         messages.push(to_chat_message(msg));
     }
 
+    // 7.5 §6.5d: OpenWebUI Filter inlets run over the assembled body once
+    //    per send, in stored order — best-effort; a failing filter logs and
+    //    is skipped, never blocking the turn.
+    crate::owui::run_inlets(&state.db, &routed.model, &mut messages).await;
+
     // 8. Tool loop (§6.1): the model emits tool_call → validate → execute →
     //    `<tool_result>` message appended → it continues, up to `max_hops`,
     //    then a forced no-tools summary. With no workspace bound the model
@@ -1641,8 +1646,11 @@ fn apply_capability_facts(state: &AppState, cfg: &TriadConfig, ctx: &mut policy:
 /// §3.10: does a model reference ride the built-in local endpoint? Bare
 /// refs (pre-M3 settings) are local by definition.
 fn is_local_ref(model_ref: &str) -> bool {
-    let (endpoint, _) = crate::providers::parse_model_ref(model_ref);
-    endpoint.map(|e| e == DEFAULT_ENDPOINT).unwrap_or(true)
+    let (endpoint, bare) = crate::providers::parse_model_ref(model_ref);
+    // §6.5d: Pipes are local Python manifests — a local-only turn routed to
+    // one never counts as a cloud leak.
+    bare.starts_with(crate::owui::PIPE_PREFIX)
+        || endpoint.map(|e| e == DEFAULT_ENDPOINT).unwrap_or(true)
 }
 
 /// §3.10: the local substitute for a cloud resolution — the local role

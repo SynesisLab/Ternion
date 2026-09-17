@@ -106,7 +106,26 @@ pub async fn list_models(state: State<'_, AppState>) -> Result<Vec<ModelInfo>, C
         }
     }
 
-    let merged = merge_records(all, visible_records(&state, &profiles).await?);
+    let mut merged = merge_records(all, visible_records(&state, &profiles).await?);
+
+    // §6.5d: enabled Pipe manifests surface as pseudo-models behind the
+    // synthetic pipe endpoint — selectable, pinned, and served by the
+    // PipeProvider like any other model.
+    for row in state.db.list_owui_tools().await.unwrap_or_default() {
+        if row.enabled && row.kind == "pipe" {
+            merged.push(ModelInfo {
+                id: qualified_model_ref(crate::owui::PIPE_ENDPOINT, &crate::owui::pipe_ref(&row.name)),
+                display_name: row.name.clone(),
+                endpoint_id: crate::owui::PIPE_ENDPOINT.to_string(),
+                size_bytes: None,
+                parameter_size: None,
+                quantization_level: None,
+                family: Some("openwebui-pipe".to_string()),
+                context_length: None,
+                capabilities: Vec::new(),
+            });
+        }
+    }
 
     // Cache capability facts for the policy engine's hard rules (§5.4).
     state.update_model_registry(merged.clone());

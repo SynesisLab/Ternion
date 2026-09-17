@@ -259,6 +259,9 @@ pub async fn compress_prefix(
     // Summarizer: the Herald role when assigned, else the routed model
     // itself (§6.5c "the summarizer (Herald/Titan)").
     let model_ref = summarizer_ref.unwrap_or(routed_model);
+    if model_ref.starts_with(crate::owui::PIPE_PREFIX) {
+        return None; // a Pipe can't summarize — degrade to the omission note
+    }
     let (endpoint, bare) = crate::providers::parse_model_ref(model_ref);
     let provider = state
         .provider_for(endpoint.as_deref().unwrap_or(DEFAULT_ENDPOINT))

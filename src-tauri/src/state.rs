@@ -104,6 +104,12 @@ impl AppState {
     }
 
     pub fn provider_for(&self, endpoint_id: &str) -> Result<Arc<dyn Provider>, CmdError> {
+        // §6.5d: Pipe manifests serve a synthetic endpoint — the adapter is
+        // built per call (it reads the manifest rows) instead of living in
+        // the profile-built registry.
+        if endpoint_id == crate::owui::PIPE_ENDPOINT {
+            return Ok(Arc::new(crate::owui::PipeProvider::new(self.db.clone())));
+        }
         self.providers
             .read()
             .unwrap_or_else(|p| p.into_inner())

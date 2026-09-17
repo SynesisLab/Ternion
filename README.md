@@ -52,7 +52,10 @@ task, and Scout overruns offer a one-click "Continue with Titan".
   OpenWebUI renamed from Tools to Skills) merge into the same
   namespaced, permission-gated tool surface
   (`mcp__<server>__<tool>`, `owui__<manifest>__<method>`). OpenWebUI
-  **Functions** (Filters / Pipes) are not supported yet — see Roadmap.
+  **Functions** work too: a **Filter**'s `inlet` transforms the assembled
+  request body before the model sees it (best-effort, composed in stored
+  order), and a **Pipe** runs as a selectable pseudo-model whose output
+  streams into the chat like any model's.
 - **Context compression** — when the routed model's window fills, older
   history is progressively summarized into a stored rolling summary;
   the recent tail stays verbatim and failures degrade to plain
@@ -159,9 +162,10 @@ design lives in [DESIGN.md](./DESIGN.md).
 
 ## Roadmap
 
-Deliberately out of scope for now: mid-stream provider failover retry,
-mDNS endpoint discovery, OpenWebUI Functions (Filters / Pipes) as
-middleware, and code signing for the installer.
+Deliberately out of scope for now: OpenWebUI filter valves and outlet
+transforms (the deeper half of Functions middleware), mid-stream provider
+failover retry, mDNS endpoint discovery, and code signing for the
+installer.
 
 ## Releases & updates
 

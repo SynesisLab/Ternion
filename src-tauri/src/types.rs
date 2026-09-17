@@ -102,7 +102,7 @@ impl Default for RoutingDecision {
 /// One part of a message body. `content` in the DB is a JSON array of these
 /// (design §8.2: "normalized JSON (parts, tool calls)") — M2 adds tool parts,
 /// M3 adds image parts, no migration needed.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", rename_all_fields = "camelCase")]
 pub enum ContentPart {
     Text { text: String },
@@ -138,7 +138,7 @@ pub struct ToolCall {
 }
 
 /// Message body as stored/sent: plain string or a parts array (Appendix A).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ChatContent {
     Text(String),
@@ -433,8 +433,9 @@ pub struct McpTestResult {
     pub error: Option<String>,
 }
 
-/// A stored OpenWebUI "Tools" manifest (§6.5b) — the raw Python source plus
-/// its display name; specs are parsed per send, so nothing else is cached.
+/// A stored OpenWebUI manifest (§6.5b/§6.5d) — the raw Python source plus
+/// its display name and kind; specs are parsed per send, so nothing else is
+/// cached.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OwuiTool {
@@ -442,6 +443,10 @@ pub struct OwuiTool {
     pub name: String,
     pub source: String,
     pub enabled: bool,
+    /// Manifest kind (§6.5d): `tools` (Skills — model-callable methods),
+    /// `filter` (Functions middleware, inlet/outlet) or `pipe` (a Function
+    /// surfaced as a pseudo-model).
+    pub kind: String,
 }
 
 /// Result of an OpenWebUI manifest test — parse verdict plus a Python

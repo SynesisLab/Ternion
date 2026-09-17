@@ -233,11 +233,11 @@ impl Database {
 
     // -- OpenWebUI tools (§6.5b) ----------------------------------------------
 
-    /// Stored OpenWebUI tool manifests, oldest first.
+    /// Stored OpenWebUI manifests, oldest first.
     pub async fn list_owui_tools(&self) -> Result<Vec<OwuiTool>, CmdError> {
         self.run(|c| {
             let mut stmt = c.prepare(
-                "SELECT id, name, source, enabled FROM owui_tools ORDER BY created_at, rowid",
+                "SELECT id, name, source, enabled, kind FROM owui_tools ORDER BY created_at, rowid",
             )?;
             let rows = stmt.query_map([], |r| {
                 Ok(OwuiTool {
@@ -245,6 +245,7 @@ impl Database {
                     name: r.get(1)?,
                     source: r.get(2)?,
                     enabled: r.get::<_, i64>(3)? != 0,
+                    kind: r.get::<_, String>(4)?,
                 })
             })?;
             rows.collect()
@@ -256,12 +257,13 @@ impl Database {
     pub async fn upsert_owui_tool(&self, tool: OwuiTool, now: i64) -> Result<(), CmdError> {
         self.run(move |c| {
             c.execute(
-                "INSERT INTO owui_tools (id, name, source, enabled, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+                "INSERT INTO owui_tools (id, name, source, enabled, kind, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
                  ON CONFLICT(id) DO UPDATE SET
                     name = excluded.name, source = excluded.source,
-                    enabled = excluded.enabled, updated_at = excluded.updated_at",
-                params![tool.id, tool.name, tool.source, tool.enabled as i64, now],
+                    enabled = excluded.enabled, kind = excluded.kind,
+                    updated_at = excluded.updated_at",
+                params![tool.id, tool.name, tool.source, tool.enabled as i64, tool.kind, now],
             )
             .map(|_| ())
         })
@@ -1401,6 +1403,16 @@ fn get_messages_sync(conn: &Connection, conversation_id: &str, limit: i64) -> Db
 }
 
 #[cfg(test)]
+impl Database {
+    /// Cross-module test fixture: a Database over a fresh temp file.
+    pub async fn test_db() -> (tempfile::TempDir, Database) {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open(&dir.path().join("test.db")).unwrap();
+        (dir, db)
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1409,7 +1421,6 @@ mod tests {
         let db = Database::open(&dir.path().join("test.db")).unwrap();
         (dir, db)
     }
-
     #[tokio::test]
     async fn reopen_is_idempotent() {
         let dir = tempfile::tempdir().unwrap();
@@ -1433,6 +1444,7 @@ mod tests {
             name: "Weather Tools".into(),
             source: "class Tools:\n    def get_weather(self, city: str) -> str:\n        return \"sunny\"".into(),
             enabled: true,
+            kind: "tools".into(),
         };
         db.upsert_owui_tool(tool, now).await.unwrap();
         // Edit on the same id updates in place.
@@ -1442,6 +1454,7 @@ mod tests {
                 name: "Weather".into(),
                 source: "class Tools:\n    pass".into(),
                 enabled: false,
+                kind: "filter".into(),
             },
             now + 1,
         )
@@ -1451,6 +1464,7 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].name, "Weather");
         assert!(!rows[0].enabled);
+        assert_eq!(rows[0].kind, "filter");
         assert!(rows[0].source.contains("pass"));
 
         assert!(db.delete_owui_tool("owui_t1".into()).await.unwrap());

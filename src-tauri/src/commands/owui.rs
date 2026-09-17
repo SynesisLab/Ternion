@@ -45,10 +45,26 @@ pub async fn save_owui_tool(
         }
     }
 
-    // The source must be a parseable manifest — reject garbage at save time
-    // rather than silently skipping the tool at every send.
-    if let Err(e) = parse_manifest(&tool.source) {
-        return Err(CmdError::new("invalid_tool", format!("Manifest error: {e}")));
+    // The source must be a parseable manifest of its kind (§6.5b/§6.5d) —
+    // reject garbage at save time rather than silently skipping the row at
+    // every send.
+    tool.kind = crate::owui::parse_kind(&tool.kind).as_str().to_string();
+    match crate::owui::parse_kind(&tool.kind) {
+        crate::owui::ManifestKind::Filter => {
+            if let Err(e) = crate::owui::parse_filter(&tool.source) {
+                return Err(CmdError::new("invalid_tool", format!("Filter error: {e}")));
+            }
+        }
+        crate::owui::ManifestKind::Pipe => {
+            if let Err(e) = crate::owui::parse_pipe(&tool.source) {
+                return Err(CmdError::new("invalid_tool", format!("Pipe error: {e}")));
+            }
+        }
+        crate::owui::ManifestKind::Tools => {
+            if let Err(e) = parse_manifest(&tool.source) {
+                return Err(CmdError::new("invalid_tool", format!("Manifest error: {e}")));
+            }
+        }
     }
 
     if tool.id.trim().is_empty() {

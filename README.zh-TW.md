@@ -43,7 +43,9 @@ Scout 超出輸出上限時提供一鍵「以 Titan 接續」。
   `class Tools` 資訊清單，相容於 OpenWebUI 由 Tools 更名為 Skills 的
   格式），併入同一個以命名空間分隔、經權限閘門的工具介面
   （`mcp__<伺服器>__<工具>`、`owui__<清單>__<方法>`）。OpenWebUI
-  **Functions**（Filters / Pipes）尚未支援 — 見路線圖。
+  **Functions** 也支援：**Filter** 的 `inlet` 會在模型看到請求前轉換組裝
+  好的請求主體（盡力而為、依儲存順序組合），**Pipe** 則作為可選擇的
+  偽模型執行，輸出像任何模型一樣串流進對話。
 - **上下文壓縮** — 當路由模型的視窗將滿，較舊歷史會漸進式摘要成一份
   持續併入的儲存摘要；近期結尾保持原文；失敗時降級為單純截斷，絕不
   阻塞
@@ -139,8 +141,9 @@ cargo test -- --ignored   # 針對執行中 Ollama 的即時探測
 
 ## 路線圖
 
-目前刻意不做：串流中的提供者失效重試、mDNS 端點探索、OpenWebUI
-Functions（Filters / Pipes）作為中介層、以及安裝程式的程式碼簽署。
+目前刻意不做：OpenWebUI filter valves 與 outlet 轉換（Functions 中介層的
+深層部分）、串流中的提供者失效重試、mDNS 端點探索、以及安裝程式的
+程式碼簽署。
 
 ## 發佈與更新
 
