@@ -147,6 +147,31 @@ export interface RoutingEvent {
   overrideKind: string | null;
 }
 
+/** Per-role usage aggregate (§3.11 Triad report). */
+export interface RoleStat {
+  role: string;
+  turns: number;
+  avgLatencyMs: number | null;
+  tokensIn: number;
+  tokensOut: number;
+}
+
+/** Settings → Triad report (§3.11): rates are derived from the counts. */
+export interface TriadReport {
+  totalTurns: number;
+  heraldTurns: number;
+  heuristicTurns: number;
+  hardRuleTurns: number;
+  manualTurns: number;
+  escalations: number;
+  deescalations: number;
+  overrides: number;
+  avgHeraldLatencyMs: number | null;
+  roles: RoleStat[];
+  timeSavedMs: number | null;
+  titanBaselineMs: number | null;
+}
+
 export interface ModelInfo {
   /** Model reference (§5.1): bare for the built-in, "model@endpoint" for profiles. */
   id: string;

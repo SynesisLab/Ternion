@@ -7,6 +7,7 @@ import type {
   Message,
   ModelInfo,
   RoutingEvent,
+  TriadReport,
 } from "../types/chat";
 import type { StreamEvent } from "../types/stream";
 
@@ -131,6 +132,11 @@ export function listRoutingEvents(
 /** Follow-up chips (§3.7): returns and clears the cached set. */
 export function takeSuggestions(conversationId: string): Promise<string[]> {
   return invoke<string[]>("take_suggestions", { conversationId });
+}
+
+/** §3.11 Triad report: aggregates over every routing event and message. */
+export function triadReport(): Promise<TriadReport> {
+  return invoke<TriadReport>("triad_report");
 }
 
 // -- Conversations --------------------------------------------------------

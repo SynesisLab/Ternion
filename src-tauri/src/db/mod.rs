@@ -16,9 +16,9 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 use crate::{
     error::CmdError,
     types::{
-        Attachment, ChatRole, ContentPart, Conversation, EndpointProfile, Message,
-        MessageRouting, MessageStatus, ModelRecord, ModelRole, RoutingDecision,
-        RoutingEvent, Target, ToolCallRow,
+        Attachment, ChatRole, ContentPart, Conversation, DecisionSource, EndpointProfile,
+        Message, MessageRouting, MessageStatus, ModelRecord, ModelRole, RoleStat,
+        RoutingDecision, RoutingEvent, Target, ToolCallRow, TriadReport,
     },
     ids,
 };
@@ -746,6 +746,136 @@ impl Database {
         .await
     }
 
+    /// Settings → Triad report (§3.11): aggregate every routing event and
+    /// completed assistant message. All counting happens in one blocking
+    /// closure; escalation/de-escalation compares the persisted opinion
+    /// (decision JSON) against the turn's final target.
+    pub async fn triad_report(&self) -> Result<TriadReport, CmdError> {
+        self.run(move |c| {
+            let mut report = TriadReport::default();
+
+            // -- routing events --------------------------------------------------
+            let mut stmt = c.prepare(
+                "SELECT decision, final_target, override_kind, latency_ms
+                 FROM routing_events",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, Option<String>>("decision")?,
+                    r.get::<_, Option<String>>("final_target")?,
+                    r.get::<_, Option<String>>("override_kind")?,
+                    r.get::<_, Option<i64>>("latency_ms")?,
+                ))
+            })?;
+            let mut herald_latency_sum = 0u64;
+            let mut herald_latency_n = 0u64;
+            for row in rows {
+                let (decision, final_target, override_kind, latency_ms) = row?;
+                report.total_turns += 1;
+                if override_kind.is_some() {
+                    report.overrides += 1;
+                }
+                let parsed: Option<RoutingDecision> = decision
+                    .as_deref()
+                    .and_then(|s| serde_json::from_str(s).ok());
+                match parsed.as_ref().map(|d| d.source) {
+                    Some(DecisionSource::Herald) => report.herald_turns += 1,
+                    Some(DecisionSource::Heuristic) => report.heuristic_turns += 1,
+                    Some(DecisionSource::HardRule) => report.hard_rule_turns += 1,
+                    _ => report.manual_turns += 1,
+                }
+                if parsed.as_ref().map(|d| d.source) == Some(DecisionSource::Herald) {
+                    if let Some(ms) = latency_ms {
+                        if ms >= 0 {
+                            herald_latency_sum += ms as u64;
+                            herald_latency_n += 1;
+                        }
+                    }
+                }
+                // Auto turns only: pins (override_kind set) are deliberate,
+                // not routing misses.
+                if override_kind.is_none() {
+                    let said = parsed.as_ref().map(|d| d.target);
+                    let ended = match final_target.as_deref() {
+                        Some("titan") => Some(Target::Titan),
+                        Some("scout") => Some(Target::Scout),
+                        _ => None,
+                    };
+                    match (said, ended) {
+                        (Some(Target::Scout), Some(Target::Titan)) => report.escalations += 1,
+                        (Some(Target::Titan), Some(Target::Scout)) => report.deescalations += 1,
+                        _ => {}
+                    }
+                }
+            }
+            report.avg_herald_latency_ms = if herald_latency_n > 0 {
+                Some(herald_latency_sum / herald_latency_n)
+            } else {
+                None
+            };
+            // -- per-role usage ----------------------------------------------------
+            let mut stmt = c.prepare(
+                "SELECT model_role, COUNT(*), AVG(latency_ms),
+                        SUM(COALESCE(tokens_in, 0)), SUM(COALESCE(tokens_out, 0))
+                 FROM messages
+                 WHERE role = 'assistant' AND status != 'streaming' AND model_role IS NOT NULL
+                 GROUP BY model_role",
+            )?;
+            let role_rows = stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, Option<String>>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, Option<f64>>(2)?,
+                    r.get::<_, Option<i64>>(3)?,
+                    r.get::<_, Option<i64>>(4)?,
+                ))
+            })?;
+            let mut roles: Vec<RoleStat> = Vec::new();
+            for row in role_rows {
+                let (role, turns, avg_latency, tokens_in, tokens_out) = row?;
+                roles.push(RoleStat {
+                    role: role.unwrap_or_default(),
+                    turns: turns.max(0) as u64,
+                    avg_latency_ms: avg_latency.map(|f| f.max(0.0) as u64),
+                    tokens_in: tokens_in.unwrap_or_default().max(0) as u64,
+                    tokens_out: tokens_out.unwrap_or_default().max(0) as u64,
+                });
+            }
+            // §3.11 "estimated time saved vs always-Titan": replay every
+            // completed Scout turn against the observed average Titan
+            // latency (8 s fallback when Titan never ran — the estimate is
+            // then labelled as such by `titan_baseline_ms = null`).
+            const TITAN_BASELINE_FALLBACK_MS: i64 = 8_000;
+            let titan_avg = roles
+                .iter()
+                .find(|r| r.role == "titan")
+                .and_then(|r| r.avg_latency_ms)
+                .map(|ms| ms as i64)
+                .unwrap_or(TITAN_BASELINE_FALLBACK_MS);
+            report.titan_baseline_ms = roles
+                .iter()
+                .find(|r| r.role == "titan")
+                .and_then(|r| r.avg_latency_ms);
+            let mut saved: i64 = 0;
+            let mut stmt = c.prepare(
+                "SELECT latency_ms FROM messages
+                 WHERE role = 'assistant' AND status != 'streaming'
+                   AND model_role = 'scout' AND latency_ms IS NOT NULL",
+            )?;
+            let lats = stmt.query_map([], |r| r.get::<_, Option<i64>>(0))?;
+            for lat in lats {
+                if let Some(ms) = lat? {
+                    saved += (titan_avg - ms.max(0)).max(0);
+                }
+            }
+            report.time_saved_ms = Some(saved.max(0) as u64);
+            report.roles = roles;
+
+            Ok(report)
+        })
+        .await
+    }
+
     /// Attach routing outcomes to the assistant placeholder row.
     pub async fn set_message_routing(
         &self,
@@ -1228,6 +1358,108 @@ mod tests {
         let all = db.get_all_settings().await.unwrap();
         assert!(all.iter().any(|(k, v)| k == "chat.temperature" && v == "0.9"));
         assert!(all.iter().any(|(k, v)| k == "custom.new" && v == "1"));
+    }
+
+    /// §3.11 Triad report: source counts, escalation/de-escalation pairs,
+    /// override count, herald latency average, per-role usage, and the
+    /// always-Titan time-saved estimate (streaming rows excluded).
+    #[tokio::test]
+    async fn triad_report_aggregates_events_and_roles() {
+        let (_dir, db) = temp_db().await;
+        let now = crate::ids::now_ms();
+        db.create_conversation("c1".into(), now).await.unwrap();
+
+        let decision = |source: DecisionSource, target: Target| RoutingDecision {
+            target,
+            confidence: 0.8,
+            complexity: 2,
+            reason: "test".into(),
+            source,
+            ..RoutingDecision::default()
+        };
+
+        // Herald scout → titan: an escalation.
+        db.insert_routing_event(
+            "re1".into(), "c1".into(), "a1".into(),
+            decision(DecisionSource::Herald, Target::Scout),
+            Target::Titan, "m".into(), 180, None,
+        ).await.unwrap();
+        // Herald titan → titan: plain.
+        db.insert_routing_event(
+            "re2".into(), "c1".into(), "a2".into(),
+            decision(DecisionSource::Herald, Target::Titan),
+            Target::Titan, "m".into(), 210, None,
+        ).await.unwrap();
+        // Heuristic scout → scout.
+        db.insert_routing_event(
+            "re3".into(), "c1".into(), "a3".into(),
+            decision(DecisionSource::Heuristic, Target::Scout),
+            Target::Scout, "m".into(), 5, None,
+        ).await.unwrap();
+        // Pinned: an override, never a routing miss.
+        db.insert_routing_event(
+            "re4".into(), "c1".into(), "a4".into(),
+            decision(DecisionSource::Manual, Target::Titan),
+            Target::Titan, "m".into(), 0, Some("manual".into()),
+        ).await.unwrap();
+        // Herald titan → scout: a de-escalation.
+        db.insert_routing_event(
+            "re5".into(), "c1".into(), "a5".into(),
+            decision(DecisionSource::Herald, Target::Titan),
+            Target::Scout, "m".into(), 100, None,
+        ).await.unwrap();
+
+        async fn role_of(db: &Database, id: &str, role: ModelRole) {
+            db.set_message_routing(id.into(), Some(role), "m".into(), "ep_local_ollama".into(), None)
+                .await
+                .unwrap();
+        }
+        async fn finish(db: &Database, id: &str, latency: u64, tokens_in: u64, tokens_out: u64) {
+            db.update_assistant_message(
+                id.into(), vec![], None, MessageStatus::Complete,
+                Some(tokens_in), Some(tokens_out), Some(latency), None,
+            )
+            .await
+            .unwrap();
+        }
+        for (id, role) in [
+            ("a1", ModelRole::Scout),
+            ("a2", ModelRole::Titan),
+            ("a3", ModelRole::Scout),
+            ("a4", ModelRole::Scout), // left streaming → excluded
+        ] {
+            db.insert_assistant_placeholder(
+                id.into(), "c1".into(), "m".into(), "ep_local_ollama".into(), now,
+            )
+            .await
+            .unwrap();
+            role_of(&db, id, role).await;
+        }
+        finish(&db, "a1", 900, 100, 200).await;
+        finish(&db, "a2", 9_000, 5_000, 3_000).await;
+        finish(&db, "a3", 1_500, 120, 250).await;
+
+        let report = db.triad_report().await.unwrap();
+        assert_eq!(report.total_turns, 5);
+        assert_eq!(report.herald_turns, 3);
+        assert_eq!(report.heuristic_turns, 1);
+        assert_eq!(report.manual_turns, 1);
+        assert_eq!(report.overrides, 1);
+        assert_eq!(report.escalations, 1);
+        assert_eq!(report.deescalations, 1);
+        assert_eq!(report.avg_herald_latency_ms, Some((180 + 210 + 100) / 3));
+
+        let scout = report.roles.iter().find(|r| r.role == "scout").unwrap();
+        assert_eq!(scout.turns, 2, "streaming row excluded");
+        assert_eq!(scout.tokens_in, 220);
+        assert_eq!(scout.tokens_out, 450);
+        let titan = report.roles.iter().find(|r| r.role == "titan").unwrap();
+        assert_eq!(titan.avg_latency_ms, Some(9_000));
+
+        // Baseline is the observed titan average; both scout turns saved
+        // against it.
+        assert_eq!(report.titan_baseline_ms, Some(9_000));
+        assert_eq!(report.time_saved_ms, Some((9_000 - 900) + (9_000 - 1_500)));
     }
 
     /// The message DTO carries its routing outcome (§9.2 ribbon) — joined

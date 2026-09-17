@@ -15,12 +15,13 @@ import {
   setSetting,
   setToolPermission,
   testEndpoint,
+  triadReport,
   verifyModel,
   type EndpointProfile,
   type EndpointTestResult,
   type ToolPermissionRow,
 } from "../lib/ipc";
-import type { ModelInfo } from "../types/chat";
+import type { ModelInfo, TriadReport } from "../types/chat";
 import { settingsKeys } from "../lib/settingsKeys";
 import { t } from "../i18n";
 import { useChatStore } from "../store/chatStore";
@@ -350,6 +351,8 @@ export function SettingsDialog({
           <ModelsTab profiles={profiles} />
         ) : tab === "triad" ? (
           <div className="space-y-4">
+            <TriadReportSection />
+
             <label className="block">
               <span className="flex items-center gap-2 text-sm text-[color:var(--color-ink)]">
                 <input
@@ -583,6 +586,128 @@ function TabButton({
       {children}
     </button>
   );
+}
+
+/** §3.11 Triad report — fetched on demand; rates derived from counts. */
+function TriadReportSection() {
+  const [report, setReport] = useState<TriadReport | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const load = async () => {
+    setLoading(true);
+    await triadReport()
+      .then(setReport)
+      .catch(() => setReport(null))
+      .finally(() => setLoading(false));
+  };
+
+  return (
+    <div className="rounded-lg border border-[color:var(--color-edge)] p-3">
+      <div className="flex items-center justify-between">
+        <div className="text-xs font-medium text-[color:var(--color-muted)]">
+          {t("settings.triad.report")}
+        </div>
+        <button
+          type="button"
+          onClick={() => void load()}
+          className="rounded-lg border border-[color:var(--color-edge)] px-2.5 py-1 text-xs text-[color:var(--color-ink)] hover:border-[color:var(--color-accent)]"
+        >
+          {loading ? "…" : t("settings.triad.reportLoad")}
+        </button>
+      </div>
+
+      {report && report.totalTurns === 0 && (
+        <div className="mt-2 text-xs text-[color:var(--color-muted)]">
+          {t("settings.triad.reportEmpty")}
+        </div>
+      )}
+
+      {report && report.totalTurns > 0 && <ReportBody report={report} />}
+    </div>
+  );
+}
+
+function ReportBody({ report }: { report: TriadReport }) {
+  const auto = report.heraldTurns + report.heuristicTurns + report.hardRuleTurns;
+  const escRate = auto > 0 ? Math.round((report.escalations / auto) * 100) : null;
+  const ovrRate =
+    report.totalTurns > 0
+      ? Math.round((report.overrides / report.totalTurns) * 100)
+      : null;
+
+  return (
+    <div className="mt-2.5 space-y-1.5 text-xs text-[color:var(--color-ink)]">
+      <div className="flex flex-wrap gap-x-4 gap-y-1">
+        <span>
+          {report.totalTurns} turns · {report.heraldTurns} herald ·{" "}
+          {report.heuristicTurns} heur · {report.hardRuleTurns} rule ·{" "}
+          {report.manualTurns} manual
+        </span>
+      </div>
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-[color:var(--color-muted)]">
+        <span>
+          {t("settings.triad.reportEscalation")}: {report.escalations}/{auto}
+          {escRate != null && ` (${escRate}%)`}
+        </span>
+        <span>De-esc: {report.deescalations}</span>
+        <span>
+          {t("settings.triad.reportOverride")}: {report.overrides}/{report.totalTurns}
+          {ovrRate != null && ` (${ovrRate}%)`}
+        </span>
+        {report.avgHeraldLatencyMs != null && (
+          <span>
+            {t("settings.triad.reportHeraldLatency")}:{" "}
+            {fmtMs(report.avgHeraldLatencyMs)}
+          </span>
+        )}
+      </div>
+
+      {report.roles.length > 0 && (
+        <table className="w-full border-collapse">
+          <thead>
+            <tr className="text-left text-[10px] uppercase tracking-wide text-[color:var(--color-muted)]">
+              <th className="py-1 pr-2 font-medium">role</th>
+              <th className="py-1 pr-2 font-medium">turns</th>
+              <th className="py-1 pr-2 font-medium">latency</th>
+              <th className="py-1 font-medium">{t("settings.triad.reportTokens")}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {report.roles.map((r) => (
+              <tr key={r.role} className="border-t border-[color:var(--color-edge)]">
+                <td className="py-1 pr-2">{r.role}</td>
+                <td className="py-1 pr-2">{r.turns}</td>
+                <td className="py-1 pr-2">
+                  {r.avgLatencyMs != null ? fmtMs(r.avgLatencyMs) : "—"}
+                </td>
+                <td className="py-1">
+                  {r.tokensIn.toLocaleString()} in / {r.tokensOut.toLocaleString()} out
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      {report.timeSavedMs != null && (
+        <div className="pt-1 text-[color:var(--color-muted)]">
+          {t("settings.triad.reportTimeSaved")}:{" "}
+          <span className="text-[color:var(--color-accent-2)]">{fmtMs(report.timeSavedMs)}</span>
+          {report.titanBaselineMs == null && (
+            <span className="ml-1 text-[10px]">
+              ({t("settings.triad.reportBaselineFallback")})
+            </span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Compact durations: sub-second in ms, otherwise seconds. */
+function fmtMs(ms: number): string {
+  if (ms < 1000) return `${ms} ms`;
+  return `${(ms / 1000).toLocaleString(undefined, { maximumFractionDigits: 1 })} s`;
 }
 
 /** Endpoint profiles (§5.1): CRUD + connection test. Changes persist

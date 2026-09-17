@@ -144,6 +144,16 @@ export const en = {
   "settings.triad.sidecars": "Sidecar tasks (Herald)",
   "settings.triad.sidecarTitles": "Refine chat titles",
   "settings.triad.sidecarSuggestions": "Suggest follow-up messages",
+  "settings.triad.report": "Triad report",
+  "settings.triad.reportLoad": "Show report",
+  "settings.triad.reportEmpty": "No routed turns yet.",
+  "settings.triad.reportEscalation": "Escalation rate",
+  "settings.triad.reportOverride": "Override rate",
+  "settings.triad.reportHeraldLatency": "Herald latency (avg)",
+  "settings.triad.reportPerRole": "Per role",
+  "settings.triad.reportTimeSaved": "Est. time saved vs always-Titan",
+  "settings.triad.reportBaselineFallback": "no Titan turns yet — estimated against 8 s",
+  "settings.triad.reportTokens": "tokens",
 
   "chat.empty.title": "One interface. Three models.",
   "chat.empty.subtitle":

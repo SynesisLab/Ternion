@@ -441,6 +441,46 @@ pub struct RoutingEvent {
     pub override_kind: Option<String>,
 }
 
+/// Per-role usage aggregate for the Triad report (design §3.11).
+#[derive(Debug, Clone, Serialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RoleStat {
+    /// "herald" | "scout" | "titan"
+    pub role: String,
+    pub turns: u64,
+    pub avg_latency_ms: Option<u64>,
+    pub tokens_in: u64,
+    pub tokens_out: u64,
+}
+
+/// Settings → Triad report (design §3.11): aggregates over every routing
+/// event and completed assistant message. Escalation/override *rates* are
+/// derived on the frontend from these counts.
+#[derive(Debug, Clone, Serialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TriadReport {
+    pub total_turns: u64,
+    pub herald_turns: u64,
+    pub heuristic_turns: u64,
+    pub hard_rule_turns: u64,
+    /// Pins, skip-router and unparseable decisions.
+    pub manual_turns: u64,
+    /// Auto turns that ended on Titan while Herald said Scout.
+    pub escalations: u64,
+    /// Auto turns that ended on Scout while the first opinion said Titan.
+    pub deescalations: u64,
+    /// Turns whose model was chosen by a pin or skip-router.
+    pub overrides: u64,
+    pub avg_herald_latency_ms: Option<u64>,
+    pub roles: Vec<RoleStat>,
+    /// Estimate of streaming time saved vs routing every turn to Titan
+    /// (see `titan_baseline_ms` for the baseline used).
+    pub time_saved_ms: Option<u64>,
+    /// Observed avg Titan latency backing the estimate; `None` when no
+    /// Titan turns exist and the 8 s fallback was used instead.
+    pub titan_baseline_ms: Option<u64>,
+}
+
 /// One executed tool call behind an assistant message (tool runtime §6.1).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

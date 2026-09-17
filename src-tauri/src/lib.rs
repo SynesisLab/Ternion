@@ -48,6 +48,7 @@ pub fn run() {
             commands::chat_send,
             commands::chat_stop,
             commands::list_routing_events,
+            commands::triad_report,
             commands::take_suggestions,
             commands::list_conversations,
             commands::create_conversation,

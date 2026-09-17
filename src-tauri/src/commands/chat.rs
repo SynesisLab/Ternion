@@ -8,7 +8,7 @@ use crate::{
     chat,
     error::CmdError,
     state::AppState,
-    types::{ChatSendResult, RoutingEvent, StreamEvent},
+    types::{ChatSendResult, RoutingEvent, StreamEvent, TriadReport},
 };
 
 #[derive(Deserialize, Debug)]
@@ -65,6 +65,13 @@ pub async fn list_routing_events(
     conversation_id: String,
 ) -> Result<Vec<RoutingEvent>, CmdError> {
     state.db.list_routing_events(conversation_id, 100).await
+}
+
+/// Settings → Triad report (§3.11): aggregates over every routing event and
+/// completed assistant message.
+#[tauri::command]
+pub async fn triad_report(state: State<'_, AppState>) -> Result<TriadReport, CmdError> {
+    state.db.triad_report().await
 }
 
 /// Follow-up suggestion chips (§3.7): returns and clears the set the Herald
