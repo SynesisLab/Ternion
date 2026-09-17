@@ -156,6 +156,15 @@ export interface RoleStat {
   tokensOut: number;
 }
 
+/** One learned §3.11 threshold adjustment. */
+export interface AdaptiveBump {
+  /** Flag class: code | tools | long_form | multi_step | plain. */
+  flag: string;
+  delta: number;
+  /** How many pin overrides fed this bump. */
+  overrides: number;
+}
+
 /** Settings → Triad report (§3.11): rates are derived from the counts. */
 export interface TriadReport {
   totalTurns: number;
@@ -170,6 +179,7 @@ export interface TriadReport {
   roles: RoleStat[];
   timeSavedMs: number | null;
   titanBaselineMs: number | null;
+  adaptive: AdaptiveBump[];
 }
 
 export interface ModelInfo {

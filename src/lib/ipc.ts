@@ -139,6 +139,11 @@ export function triadReport(): Promise<TriadReport> {
   return invoke<TriadReport>("triad_report");
 }
 
+/** Clear every learned §3.11 threshold bump and its override counter. */
+export function resetAdaptive(): Promise<void> {
+  return invoke("reset_adaptive");
+}
+
 // -- Conversations --------------------------------------------------------
 
 export function listConversations(): Promise<Conversation[]> {

@@ -35,7 +35,26 @@ pub mod keys {
     pub const HERALD_KEEP_ALIVE: &str = "herald.keep_alive";
     pub const TRIAD_SCOUT_KEEP_ALIVE: &str = "triad.scout_keep_alive";
     pub const TRIAD_TITAN_KEEP_ALIVE: &str = "triad.titan_keep_alive";
+
+    // §3.11 adaptive tuning (experimental): flag-class threshold bumps
+    // learned from pin overrides. `flag` is one of code/tools/long_form/
+    // multi_step/plain.
+    pub const TRIAD_ADAPTIVE_ENABLED: &str = "triad.adaptive.enabled";
+    pub const ADAPTIVE_BUMP_PREFIX: &str = "triad.adaptive.bump.";
+    pub const ADAPTIVE_COUNT_PREFIX: &str = "triad.adaptive.count.";
+
+    pub fn adaptive_bump_key(flag: &str) -> String {
+        format!("{ADAPTIVE_BUMP_PREFIX}{flag}")
+    }
+
+    pub fn adaptive_count_key(flag: &str) -> String {
+        format!("{ADAPTIVE_COUNT_PREFIX}{flag}")
+    }
 }
+
+/// Flag classes the adaptive loop tunes (§3.11). `plain` covers decisions
+/// with none of the others set.
+pub const ADAPTIVE_FLAGS: &[&str] = &["code", "tools", "long_form", "multi_step", "plain"];
 
 pub struct SettingsCache {
     values: RwLock<HashMap<String, String>>,
@@ -78,5 +97,24 @@ impl SettingsCache {
             .write()
             .unwrap_or_else(|p| p.into_inner())
             .insert(key.to_string(), value);
+    }
+
+    /// All (key, value) pairs whose key starts with `prefix` — the adaptive
+    /// bump table is keyed per flag class, so it can't be a fixed list.
+    pub fn prefix(&self, prefix: &str) -> Vec<(String, String)> {
+        self.values
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .filter(|(k, _)| k.starts_with(prefix))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    }
+
+    pub fn remove(&self, key: &str) {
+        self.values
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(key);
     }
 }

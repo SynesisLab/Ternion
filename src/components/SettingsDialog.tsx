@@ -9,6 +9,7 @@ import {
   listEndpointProfiles,
   listModels,
   listToolPermissions,
+  resetAdaptive,
   saveEndpointProfile,
   saveModelRecord,
   setEndpointApiKey,
@@ -79,6 +80,7 @@ export function SettingsDialog({
   const [heraldTimeout, setHeraldTimeout] = useState(DEFAULT_HERALD_TIMEOUT);
   const [sidecarTitles, setSidecarTitles] = useState(true);
   const [sidecarSuggestions, setSidecarSuggestions] = useState(true);
+  const [adaptiveEnabled, setAdaptiveEnabled] = useState(false);
 
   // -- permissions (§6.6) ---------------------------------------------------
   const [grants, setGrants] = useState<ToolPermissionRow[]>([]);
@@ -125,6 +127,7 @@ export function SettingsDialog({
         getSetting(k.triadHeraldTimeoutMs),
         getSetting(k.triadSidecarTitles),
         getSetting(k.triadSidecarSuggestions),
+        getSetting(k.triadAdaptiveEnabled),
       ]);
       setTriadEnabled((triad[0] ?? "true") !== "false");
       setSkipRouter(triad[1] === "true");
@@ -139,6 +142,7 @@ export function SettingsDialog({
       setHeraldTimeout(triad[10] ?? DEFAULT_HERALD_TIMEOUT);
       setSidecarTitles((triad[11] ?? "true") !== "false");
       setSidecarSuggestions((triad[12] ?? "true") !== "false");
+      setAdaptiveEnabled(triad[13] === "true");
     })();
   }, [open]);
 
@@ -164,6 +168,7 @@ export function SettingsDialog({
     setHeraldTimeout(DEFAULT_HERALD_TIMEOUT);
     setSidecarTitles(true);
     setSidecarSuggestions(true);
+    setAdaptiveEnabled(false);
   };
 
   const runTest = async () => {
@@ -208,6 +213,7 @@ export function SettingsDialog({
       setSetting(k.triadHeraldTimeoutMs, heraldTimeout.trim() || DEFAULT_HERALD_TIMEOUT),
       setSetting(k.triadSidecarTitles, String(sidecarTitles)),
       setSetting(k.triadSidecarSuggestions, String(sidecarSuggestions)),
+      setSetting(k.triadAdaptiveEnabled, String(adaptiveEnabled)),
     ];
     await Promise.all(writes).catch(() => {});
     await refreshModels();
@@ -468,6 +474,22 @@ export function SettingsDialog({
                 {t("settings.triad.sidecarSuggestions")}
               </label>
             </div>
+
+            {/* §3.11 adaptive tuning (experimental) */}
+            <label className="block">
+              <span className="flex items-center gap-2 text-sm text-[color:var(--color-ink)]">
+                <input
+                  type="checkbox"
+                  checked={adaptiveEnabled}
+                  onChange={(e) => setAdaptiveEnabled(e.target.checked)}
+                  className="accent-[color:var(--color-accent)]"
+                />
+                {t("settings.triad.adaptive")}
+              </span>
+              <span className="mt-1 block pl-6 text-xs text-[color:var(--color-muted)]">
+                {t("settings.triad.adaptiveHint")}
+              </span>
+            </label>
           </div>
         ) : (
           <div className="space-y-3">
@@ -622,12 +644,20 @@ function TriadReportSection() {
         </div>
       )}
 
-      {report && report.totalTurns > 0 && <ReportBody report={report} />}
+      {report && report.totalTurns > 0 && (
+        <ReportBody report={report} onReset={() => void load()} />
+      )}
     </div>
   );
 }
 
-function ReportBody({ report }: { report: TriadReport }) {
+function ReportBody({
+  report,
+  onReset,
+}: {
+  report: TriadReport;
+  onReset: () => void;
+}) {
   const auto = report.heraldTurns + report.heuristicTurns + report.hardRuleTurns;
   const escRate = auto > 0 ? Math.round((report.escalations / auto) * 100) : null;
   const ovrRate =
@@ -698,6 +728,28 @@ function ReportBody({ report }: { report: TriadReport }) {
               ({t("settings.triad.reportBaselineFallback")})
             </span>
           )}
+        </div>
+      )}
+
+      {/* §3.11: learned threshold adjustments, stated in the report. */}
+      {(report.adaptive.length > 0) && (
+        <div className="border-t border-[color:var(--color-edge)] pt-1.5 text-[color:var(--color-muted)]">
+          {report.adaptive.map((b) => (
+            <div key={b.flag}>
+              {b.flag}: {b.delta >= 0 ? "+" : ""}
+              {b.delta.toFixed(2)} escalation threshold · {b.overrides}{" "}
+              {b.overrides === 1 ? "override" : "overrides"}
+            </div>
+          ))}
+          <button
+            type="button"
+            onClick={() => {
+              void resetAdaptive().then(onReset);
+            }}
+            className="mt-1 rounded-lg border border-[color:var(--color-edge)] px-2 py-0.5 text-[11px] hover:border-[color:var(--color-accent)] hover:text-[color:var(--color-ink)]"
+          >
+            {t("settings.triad.reportReset")}
+          </button>
         </div>
       )}
     </div>

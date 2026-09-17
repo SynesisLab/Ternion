@@ -84,9 +84,15 @@ pub fn decide(
         }
     }
 
-    // 2. Herald decision when it's confident enough…
+    // 2. Herald decision when it's confident enough. Escalations (Herald →
+    //    Titan) ride the §3.11 adaptive threshold: repeated pin overrides
+    //    for a flag class raise (or lower) the bar for that class only.
     if let Some(h) = herald {
-        if h.confidence >= cfg.min_confidence {
+        let threshold = match h.target {
+            Target::Titan => cfg.min_confidence + cfg.escalation_bump(&h.flags),
+            Target::Scout => cfg.min_confidence,
+        };
+        if h.confidence >= threshold {
             let mut d = h;
             d.source = DecisionSource::Herald;
             if d.target == Target::Scout && ctx.turns_on_titan > 0 {
@@ -343,6 +349,49 @@ mod tests {
         c.turns_on_titan = 5;
         let d = decide(&cfg(), &c, Some(herald(Target::Titan, 0.7)));
         assert_eq!(d.target, Target::Titan);
+    }
+
+    /// §3.11 adaptive tuning: a learned bump on the `code` class raises the
+    /// bar for Herald-Titan escalations on code-flagged turns only — Scout
+    /// decisions and other classes keep the plain threshold.
+    #[test]
+    fn adaptive_bump_raises_only_the_matching_class() {
+        let mut cfg = cfg();
+        cfg.adaptive_enabled = true;
+        cfg.adaptive_bumps.insert("code".into(), 0.10);
+
+        let mut c = ctx();
+        c.code_keywords = true;
+        // 0.70 < 0.65 + 0.10 → Herald's escalation is rejected; heuristics
+        // also say titan here, so the target stays titan but the source
+        // proves the Herald adoption gate rejected it.
+        let mut h = herald(Target::Titan, 0.70);
+        h.flags.code = true;
+        let d = decide(&cfg, &c, Some(h));
+        assert_eq!(d.source, DecisionSource::Heuristic);
+
+        // At the raised threshold the escalation is adopted again.
+        let mut c = ctx();
+        c.code_keywords = true;
+        let mut h = herald(Target::Titan, 0.76);
+        h.flags.code = true;
+        let d = decide(&cfg, &c, Some(h));
+        assert_eq!(d.target, Target::Titan);
+        assert_eq!(d.source, DecisionSource::Herald);
+
+        // Scout decisions are unaffected by escalation bumps.
+        let d = decide(&cfg, &ctx(), Some(herald(Target::Scout, 0.66)));
+        assert_eq!(d.target, Target::Scout);
+
+        // Tuning off → bumps ignored entirely.
+        cfg.adaptive_enabled = false;
+        let mut c = ctx();
+        c.code_keywords = true;
+        let mut h = herald(Target::Titan, 0.70);
+        h.flags.code = true;
+        let d = decide(&cfg, &c, Some(h));
+        assert_eq!(d.target, Target::Titan);
+        assert_eq!(d.source, DecisionSource::Herald);
     }
 
     #[test]

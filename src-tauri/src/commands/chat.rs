@@ -68,10 +68,34 @@ pub async fn list_routing_events(
 }
 
 /// Settings → Triad report (§3.11): aggregates over every routing event and
-/// completed assistant message.
+/// completed assistant message, plus the learned §3.11 threshold bumps.
 #[tauri::command]
 pub async fn triad_report(state: State<'_, AppState>) -> Result<TriadReport, CmdError> {
-    state.db.triad_report().await
+    use crate::settings::keys;
+    use crate::types::AdaptiveBump;
+
+    let mut report = state.db.triad_report().await?;
+    report.adaptive = state
+        .settings
+        .prefix(keys::ADAPTIVE_BUMP_PREFIX)
+        .into_iter()
+        .filter_map(|(k, v)| {
+            let flag = k.strip_prefix(keys::ADAPTIVE_BUMP_PREFIX)?.to_string();
+            let delta: f32 = v.parse().ok()?;
+            let overrides = state
+                .settings
+                .get(&keys::adaptive_count_key(&flag))
+                .and_then(|c| c.parse().ok())
+                .unwrap_or(0);
+            Some(AdaptiveBump {
+                flag,
+                delta,
+                overrides,
+            })
+        })
+        .filter(|b| b.delta.abs() > f32::EPSILON)
+        .collect();
+    Ok(report)
 }
 
 /// Follow-up suggestion chips (§3.7): returns and clears the set the Herald

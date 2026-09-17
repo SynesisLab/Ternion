@@ -95,6 +95,18 @@ impl Database {
         .await
     }
 
+    /// Adaptive-tuning rows (§3.11) are one setting per flag class — a reset
+    /// clears each one rather than a single named key.
+    pub async fn delete_settings_with_prefix(&self, prefix: String) -> Result<usize, CmdError> {
+        self.run(move |c| {
+            c.execute(
+                "DELETE FROM settings WHERE key LIKE ?1 || '%'",
+                params![prefix],
+            )
+        })
+        .await
+    }
+
     // -- endpoint profiles (M3, design §5.1) --------------------------------
 
     /// User profiles, oldest first (the synthesized built-in is prepended by
@@ -872,6 +884,27 @@ impl Database {
             report.roles = roles;
 
             Ok(report)
+        })
+        .await
+    }
+
+    /// The most recent router (non-pin) decision for a conversation — the
+    /// baseline the §3.11 adaptive loop compares a new pin against.
+    pub async fn latest_auto_decision(
+        &self,
+        conversation_id: String,
+    ) -> Result<Option<RoutingDecision>, CmdError> {
+        self.run(move |c| {
+            let decision: Option<String> = c
+                .query_row(
+                    "SELECT decision FROM routing_events
+                     WHERE conversation_id = ?1 AND override_kind IS NULL
+                     ORDER BY ts DESC, rowid DESC LIMIT 1",
+                    params![conversation_id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            Ok(decision.and_then(|s| serde_json::from_str(&s).ok()))
         })
         .await
     }

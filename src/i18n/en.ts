@@ -154,6 +154,11 @@ export const en = {
   "settings.triad.reportTimeSaved": "Est. time saved vs always-Titan",
   "settings.triad.reportBaselineFallback": "no Titan turns yet — estimated against 8 s",
   "settings.triad.reportTokens": "tokens",
+  "settings.triad.reportReset": "Reset adaptive",
+  "settings.triad.adaptive": "Adaptive tuning (experimental)",
+  "settings.triad.adaptiveHint":
+    "Pins that contradict the router nudge that message class's escalation threshold. Shown in the report.",
+  "settings.triad.reportAdaptiveOff": "adaptive tuning is off",
 
   "chat.empty.title": "One interface. Three models.",
   "chat.empty.subtitle":

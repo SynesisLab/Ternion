@@ -479,6 +479,21 @@ pub struct TriadReport {
     /// Observed avg Titan latency backing the estimate; `None` when no
     /// Titan turns exist and the 8 s fallback was used instead.
     pub titan_baseline_ms: Option<u64>,
+    /// §3.11 adaptive tuning: learned per-class threshold deltas (filled by
+    /// the command layer from settings, empty unless tuning is on).
+    pub adaptive: Vec<AdaptiveBump>,
+}
+
+/// One learned §3.11 threshold adjustment.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AdaptiveBump {
+    /// Flag class: code | tools | long_form | multi_step | plain.
+    pub flag: String,
+    /// Delta applied on top of `min_confidence` for Herald-Titan turns.
+    pub delta: f32,
+    /// How many pin overrides fed this bump.
+    pub overrides: u32,
 }
 
 /// One executed tool call behind an assistant message (tool runtime §6.1).

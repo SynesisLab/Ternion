@@ -5,8 +5,8 @@
 use std::collections::HashMap;
 
 use crate::{
-    settings::{keys, SettingsCache},
-    types::Target,
+    settings::{self, keys, SettingsCache},
+    types::{RoutingFlags, Target},
 };
 
 /// Model ids assigned to each role. Empty string in settings = unassigned.
@@ -78,6 +78,12 @@ pub struct TriadConfig {
     pub herald_keep_alive: String,
     pub scout_keep_alive: String,
     pub titan_keep_alive: String,
+    /// §3.11 adaptive tuning (experimental): pin overrides nudge the
+    /// Herald escalation threshold per flag class. Off by default.
+    pub adaptive_enabled: bool,
+    /// flag class → delta applied on top of `min_confidence` for
+    /// Herald-Titan decisions carrying that class.
+    pub adaptive_bumps: HashMap<String, f32>,
 }
 
 impl Default for TriadConfig {
@@ -99,6 +105,8 @@ impl Default for TriadConfig {
             herald_keep_alive: "24h".into(),
             scout_keep_alive: "10m".into(),
             titan_keep_alive: "3m".into(),
+            adaptive_enabled: false,
+            adaptive_bumps: HashMap::new(),
         }
     }
 }
@@ -108,6 +116,19 @@ impl TriadConfig {
     /// (or a fallback model supplied by the caller).
     pub fn routing_available(&self) -> bool {
         self.enabled && (self.roles.scout.is_some() || self.roles.titan.is_some())
+    }
+
+    /// §3.11: threshold delta for a Herald-Titan decision carrying these
+    /// flags — the sum of bumps over the set classes, or the `plain` bump
+    /// when none are. Zero without adaptive tuning.
+    pub fn escalation_bump(&self, flags: &RoutingFlags) -> f32 {
+        if !self.adaptive_enabled {
+            return 0.0;
+        }
+        classes_of(flags)
+            .iter()
+            .filter_map(|c| self.adaptive_bumps.get(*c))
+            .sum()
     }
 
     /// Load from the settings cache; missing keys take `Default` values.
@@ -164,13 +185,26 @@ impl TriadConfig {
         if let Some(v) = non_empty(get(keys::TRIAD_TITAN_KEEP_ALIVE)) {
             cfg.titan_keep_alive = v;
         }
+        if let Some(v) = get(keys::TRIAD_ADAPTIVE_ENABLED) {
+            cfg.adaptive_enabled = v == "true";
+        }
+        // Bump rows are dynamic (one per flag class); anything under the
+        // bump prefix that parses as f32 counts.
+        for (k, v) in pairs.iter() {
+            if let Some(flag) = k.strip_prefix(keys::ADAPTIVE_BUMP_PREFIX) {
+                if let Some(delta) = parse_f32(v) {
+                    cfg.adaptive_bumps.insert(flag.to_string(), delta);
+                }
+            }
+        }
         cfg
     }
 }
 
 fn snapshot(settings: &SettingsCache) -> HashMap<String, String> {
     // Only the keys the router reads — cheap, and keeps tests honest about
-    // which settings actually matter.
+    // which settings actually matter. The adaptive bump rows are dynamic
+    // (one per flag class) and come along by prefix.
     const KEYS: &[&str] = &[
         keys::TRIAD_ENABLED,
         keys::TRIAD_SKIP_ROUTER,
@@ -188,11 +222,39 @@ fn snapshot(settings: &SettingsCache) -> HashMap<String, String> {
         keys::HERALD_KEEP_ALIVE,
         keys::TRIAD_SCOUT_KEEP_ALIVE,
         keys::TRIAD_TITAN_KEEP_ALIVE,
+        keys::TRIAD_ADAPTIVE_ENABLED,
     ];
-    KEYS
+    let mut out: HashMap<String, String> = KEYS
         .iter()
         .filter_map(|k| settings.get(k).map(|v| (k.to_string(), v)))
-        .collect()
+        .collect();
+    for (k, v) in settings.prefix(keys::ADAPTIVE_BUMP_PREFIX) {
+        out.insert(k, v);
+    }
+    out
+}
+
+/// The tunable classes a decision's flags belong to (§3.11): the set
+/// titan-leaning flags, or `plain` when none are. Shared with the
+/// pin-override learner in `commands/conversations.rs`.
+pub fn classes_of(flags: &RoutingFlags) -> Vec<&'static str> {
+    let mut classes = Vec::new();
+    if flags.code {
+        classes.push("code");
+    }
+    if flags.tools {
+        classes.push("tools");
+    }
+    if flags.long_form {
+        classes.push("long_form");
+    }
+    if flags.multi_step {
+        classes.push("multi_step");
+    }
+    if classes.is_empty() {
+        classes.push("plain");
+    }
+    classes
 }
 
 fn non_empty(v: Option<&str>) -> Option<String> {
@@ -263,6 +325,44 @@ mod tests {
         assert!(cfg.routing_available());
         cfg.enabled = false;
         assert!(!cfg.routing_available());
+    }
+
+    #[test]
+    fn adaptive_bumps_load_and_apply_per_class() {
+        let mut flags = RoutingFlags::default();
+        assert!((TriadConfig::default().escalation_bump(&flags)).abs() < 1e-6);
+
+        let mut cfg = TriadConfig::default();
+        cfg.adaptive_enabled = true;
+        // Still zero: nothing learned yet.
+        assert!((cfg.escalation_bump(&flags)).abs() < 1e-6, "`plain` absent → 0");
+
+        cfg.adaptive_bumps.insert("plain".into(), 0.05);
+        assert!((cfg.escalation_bump(&flags) - 0.05).abs() < 1e-6);
+
+        flags.code = true;
+        flags.multi_step = true;
+        assert!((cfg.escalation_bump(&flags)).abs() < 1e-6, "code flags don't see the plain bump");
+        cfg.adaptive_bumps.insert("code".into(), 0.10);
+        assert!((cfg.escalation_bump(&flags) - 0.10).abs() < 1e-6);
+
+        // Disabled → always zero, bumps retained but inert.
+        cfg.adaptive_enabled = false;
+        assert!((cfg.escalation_bump(&flags)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn adaptive_settings_load_through_from_pairs() {
+        let cfg = TriadConfig::from_pairs(&pairs(&[
+            ("triad.adaptive.enabled", "true"),
+            ("triad.adaptive.bump.code", "0.10"),
+            ("triad.adaptive.bump.plain", "-0.05"),
+            ("triad.adaptive.bump.garbage", "not-a-float"),
+        ]));
+        assert!(cfg.adaptive_enabled);
+        assert!((cfg.adaptive_bumps["code"] - 0.10).abs() < 1e-6);
+        assert!((cfg.adaptive_bumps["plain"] + 0.05).abs() < 1e-6);
+        assert!(!cfg.adaptive_bumps.contains_key("garbage"));
     }
 
     #[test]
