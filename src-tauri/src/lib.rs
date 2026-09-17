@@ -3,6 +3,7 @@ mod commands;
 mod db;
 mod error;
 mod ids;
+mod img;
 mod permissions;
 mod providers;
 mod router;
@@ -70,6 +71,8 @@ pub fn run() {
             commands::set_endpoint_api_key,
             commands::clear_endpoint_api_key,
             commands::test_endpoint,
+            commands::save_attachment,
+            commands::save_attachment_file,
         ])
         .setup(|app| {
             use tauri::Manager;
@@ -119,7 +122,18 @@ pub fn run() {
                 .map_err(|e| -> Box<dyn std::error::Error> { format!("http client: {e}").into() })?;
             let providers = providers::build_providers(&[], &base, http.clone());
 
-            app.manage(AppState::new(database, settings, http, providers));
+            // Attachment file bodies live next to the DB (§8.1).
+            let attachments_dir = dir.join("attachments");
+            std::fs::create_dir_all(&attachments_dir)
+                .map_err(|e| -> Box<dyn std::error::Error> { format!("attachments dir: {e}").into() })?;
+
+            app.manage(AppState::new(
+                database,
+                settings,
+                http,
+                providers,
+                attachments_dir,
+            ));
 
             tray::setup(app)?;
 

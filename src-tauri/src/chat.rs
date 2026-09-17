@@ -343,7 +343,7 @@ async fn stream_once(
 
         // Validate → execute → wrap → append, one result message per call.
         for call in &hop.calls {
-            let (result_text, is_error) = execute_tool_call(
+            let (result_text, is_error, images) = execute_tool_call(
                 state,
                 message_id,
                 call,
@@ -361,10 +361,52 @@ async fn stream_once(
                 content: result_text.clone(),
                 is_error: Some(is_error),
             });
+
+            // §7.3: images a tool produced join the result as parts — vision
+            // models receive them on the next hop (provider encoding §7.2.4).
+            // Rows link to the assistant message; the in-context tool message
+            // carries the parts for this send's remaining hops.
+            let mut parts: Vec<crate::types::ContentPart> = Vec::with_capacity(1 + images.len());
+            parts.push(crate::types::ContentPart::Text { text: envelope });
+            for img in images {
+                let att = crate::types::Attachment {
+                    id: img.id.clone(),
+                    message_id: Some(message_id.to_string()),
+                    kind: "image".into(),
+                    path: img.path.clone(),
+                    processed_path: img.processed_path.clone(),
+                    mime: img.mime.clone(),
+                    width: img.width,
+                    height: img.height,
+                    bytes: img.bytes,
+                    sha256: img.sha256.clone(),
+                    created_at: ids::now_ms(),
+                };
+                parts.push(crate::types::ContentPart::Image {
+                    attachment_id: img.id.clone(),
+                    mime: img.mime.clone(),
+                    data_base64: None,
+                });
+                if let Err(e) = state.db.insert_attachment(att).await {
+                    log::warn!("tool attachment row failed: {e}");
+                }
+            }
+
+            let content = if parts.len() == 1 {
+                // Single text part → keep the plain-string shape callers
+                // (and providers) expect.
+                match parts.remove(0) {
+                    crate::types::ContentPart::Text { text } => ChatContent::Text(text),
+                    _ => unreachable!("first part is always text"),
+                }
+            } else {
+                ChatContent::Parts(parts)
+            };
+
             messages.push(ChatMessage {
                 id: ids::new_id(),
                 role: ChatRole::Tool,
-                content: ChatContent::Text(envelope),
+                content,
                 tool_calls: None,
                 tool_call_id: Some(call.id.clone()),
                 tool_name: Some(call.name.clone()),
@@ -539,7 +581,7 @@ async fn execute_tool_call(
     workspaces: &[String],
     forward: &Arc<dyn Fn(&StreamEvent) + Send + Sync>,
     cancel: &tokio_util::sync::CancellationToken,
-) -> Result<(String, bool), CmdError> {
+) -> Result<(String, bool, Vec<crate::img::StoredImage>), CmdError> {
     let row_id = ids::new_id();
     let now = ids::now_ms();
 
@@ -559,7 +601,7 @@ async fn execute_tool_call(
             .db
             .finish_tool_call(row_id, msg.clone(), "error".to_string(), Some("auto".into()))
             .await?;
-        return Ok((msg, true));
+        return Ok((msg, true, Vec::new()));
     };
 
     let mut args: serde_json::Value = serde_json::from_str(&call.args)
@@ -580,7 +622,7 @@ async fn execute_tool_call(
             .db
             .finish_tool_call(row_id, msg.clone(), "error".to_string(), Some("auto".into()))
             .await?;
-        return Ok((msg, true));
+        return Ok((msg, true, Vec::new()));
     }
 
     state
@@ -625,7 +667,7 @@ async fn execute_tool_call(
                                 Some("denied".into()),
                             )
                             .await?;
-                        return Ok((msg, true));
+                        return Ok((msg, true, Vec::new()));
                     }
                     ApprovalDecision::Allowed { mode, edited } => {
                         permission_mode = mode;
@@ -640,24 +682,27 @@ async fn execute_tool_call(
 
     let ctx = crate::tools::ToolExecCtx {
         workspaces: workspaces.to_vec(),
+        attachments: Some(state.attachments_dir.clone()),
     };
     let executed = tool.execute(args, &ctx).await;
-    let (result_text, is_error) = match executed {
-        Ok(outcome) => {
-            let (text, err) = outcome.into_parts();
-            (
-                crate::tools::clamp_result(text),
-                err,
-            )
-        }
-        Err(e) => (e.message(), true),
+    let (result_text, is_error, mut images) = match executed {
+        Ok(outcome) => match outcome {
+            crate::tools::ToolOutcome::WithImages { text, images } => {
+                (text, false, images)
+            }
+            other => {
+                let (text, err) = other.into_parts();
+                (text, err, Vec::new())
+            }
+        },
+        Err(e) => (e.message(), true, Vec::new()),
     };
     let status = if is_error { "error" } else { "ok" };
     state
         .db
         .finish_tool_call(row_id, result_text.clone(), status.to_string(), Some(permission_mode))
         .await?;
-    Ok((result_text, is_error))
+    Ok((result_text, is_error, images))
 }
 
 /// Session grant → persisted "always" row → default ask.
@@ -2149,6 +2194,68 @@ mod tests {
                 is_error: Some(false)
             } if call_id == "call_0" && content == "echo: ping"
         )));
+    }
+
+    #[tokio::test]
+    async fn fs_read_of_an_image_becomes_an_attachment() {
+        // §7.3: fs_read on a .png produces an attachment the next hop's
+        // context carries as an image part (vision models only — M3.7).
+        let root = tempfile::tempdir().unwrap();
+        let raw = crate::img::tests::make_png(120, 60);
+        let img_path = root.path().join("screenshot.png");
+        std::fs::write(&img_path, &raw).unwrap();
+
+        let provider = FakeProvider::scripted_sequence(vec![
+            tool_call_script(
+                "fs_read",
+                &serde_json::json!({ "path": img_path.display().to_string() }).to_string(),
+                "inspecting",
+            ),
+            main_stream("described", 5),
+        ]);
+        let received = provider.received.clone();
+        let (_dir, state) = app_with(provider);
+        create_conv(&state).await;
+        state
+            .db
+            .set_conversation_workspaces(
+                "c1".into(),
+                vec![root.path().display().to_string()],
+            )
+            .await
+            .unwrap();
+
+        chat_send_inner(&state, args("look at screenshot.png")).await.unwrap();
+
+        let reqs = received.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        assert_eq!(reqs.len(), 2);
+        let tool_msg = last_tool_message(&reqs[1]);
+        let ChatContent::Parts(parts) = &tool_msg.content else {
+            panic!(
+                "expected parts on the image-carrying tool message, got {:?}",
+                tool_msg.content
+            )
+        };
+        assert_eq!(parts.len(), 2, "text envelope + image part");
+        assert!(matches!(&parts[0], crate::types::ContentPart::Text { text } if text.contains("[image file attached")));
+        let crate::types::ContentPart::Image { attachment_id, mime, data_base64 } = &parts[1]
+        else {
+            panic!("expected an image part")
+        };
+        assert_eq!(mime, "image/png");
+        assert!(data_base64.is_none(), "bodies stay on disk (§7.2.3)");
+
+        // The attachment row is persisted and linked to the assistant turn.
+        let att = state.db.get_attachment(attachment_id.clone()).await.unwrap().unwrap();
+        assert_eq!(att.mime, "image/png");
+        assert_eq!(att.width, 120);
+        assert_eq!(att.height, 60);
+        assert_eq!(att.sha256.len(), 64);
+        let msgs = messages(&state).await;
+        assert_eq!(att.message_id.as_deref(), Some(msgs[1].id.as_str()));
+        // Both copies exist on disk under the state's attachments dir.
+        assert!(std::path::Path::new(&att.path).exists());
+        assert!(std::path::Path::new(&att.processed_path).exists());
     }
 
     #[tokio::test]

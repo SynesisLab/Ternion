@@ -203,6 +203,7 @@ mod tests {
     fn ctx_with(root: &std::path::Path) -> ToolExecCtx {
         ToolExecCtx {
             workspaces: vec![root.display().to_string()],
+            attachments: None,
         }
     }
 
@@ -336,6 +337,7 @@ mod tests {
                 a.path().canonicalize().unwrap().display().to_string(),
                 b.path().canonicalize().unwrap().display().to_string(),
             ],
+        attachments: None,
         };
         let out = FsSearch
             .execute(serde_json::json!({"pattern": "shared"}), &ctx)

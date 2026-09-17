@@ -343,6 +343,27 @@ pub struct ModelRecord {
     pub verified_at: Option<i64>,
 }
 
+/// An image attachment (design §7.2/§8.2). Bodies live on disk under
+/// `%APPDATA%\Ternion\attachments\` keyed by sha256; `message_id` is None
+/// until the message carrying the image is persisted.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Attachment {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    /// Always "image" in v1 (documents are post-v1, §7.4).
+    pub kind: String,
+    pub path: String,
+    pub processed_path: String,
+    pub mime: String,
+    pub width: u32,
+    pub height: u32,
+    pub bytes: i64,
+    pub sha256: String,
+    pub created_at: i64,
+}
+
 /// User-managed endpoint profile (design §5.1). The built-in local Ollama
 /// (`ep_local_ollama`, from the `ollama.base_url` setting) is synthesized, not
 /// a table row. `api_key_ref` is a keyring handle — the secret is read from

@@ -64,6 +64,7 @@ mod tests {
     fn ctx_with(root: &std::path::Path) -> ToolExecCtx {
         ToolExecCtx {
             workspaces: vec![root.display().to_string()],
+        attachments: None,
         }
     }
 

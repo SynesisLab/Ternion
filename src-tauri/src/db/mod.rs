@@ -16,9 +16,9 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 use crate::{
     error::CmdError,
     types::{
-        ChatRole, ContentPart, Conversation, EndpointProfile, Message, MessageRouting,
-        MessageStatus, ModelRecord, ModelRole, RoutingDecision, RoutingEvent, Target,
-        ToolCallRow,
+        Attachment, ChatRole, ContentPart, Conversation, EndpointProfile, Message,
+        MessageRouting, MessageStatus, ModelRecord, ModelRole, RoutingDecision,
+        RoutingEvent, Target, ToolCallRow,
     },
     ids,
 };
@@ -237,6 +237,81 @@ impl Database {
                 params![endpoint_id, model],
             )?;
             Ok(changed > 0)
+        })
+        .await
+    }
+
+    // -- attachments (§7.2/§8.2) ---------------------------------------------
+
+    pub async fn insert_attachment(&self, att: Attachment) -> Result<(), CmdError> {
+        self.run(move |c| {
+            c.execute(
+                "INSERT INTO attachments (id, message_id, kind, path, processed_path,
+                                          mime, width, height, bytes, sha256, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![
+                    att.id,
+                    att.message_id,
+                    att.kind,
+                    att.path,
+                    att.processed_path,
+                    att.mime,
+                    att.width,
+                    att.height,
+                    att.bytes,
+                    att.sha256,
+                    att.created_at,
+                ],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Re-link an existing attachment to a persisted message row.
+    pub async fn link_attachment(
+        &self,
+        id: String,
+        message_id: String,
+    ) -> Result<(), CmdError> {
+        self.run(move |c| {
+            c.execute(
+                "UPDATE attachments SET message_id = ?2 WHERE id = ?1",
+                params![id, message_id],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn get_attachment(&self, id: String) -> Result<Option<Attachment>, CmdError> {
+        self.run(move |c| {
+            let att = c
+                .query_row(
+                    "SELECT id, message_id, kind, path, processed_path, mime,
+                            width, height, bytes, sha256, created_at
+                     FROM attachments WHERE id = ?1",
+                    params![id],
+                    |r| row_to_attachment(r),
+                )
+                .optional()?;
+            Ok(att)
+        })
+        .await
+    }
+
+    pub async fn list_message_attachments(
+        &self,
+        message_id: String,
+    ) -> Result<Vec<Attachment>, CmdError> {
+        self.run(move |c| {
+            let mut stmt = c.prepare(
+                "SELECT id, message_id, kind, path, processed_path, mime,
+                        width, height, bytes, sha256, created_at
+                 FROM attachments WHERE message_id = ?1 ORDER BY created_at, rowid",
+            )?;
+            let rows = stmt.query_map(params![message_id], |r| row_to_attachment(r))?;
+            rows.collect()
         })
         .await
     }
@@ -801,6 +876,22 @@ fn parse_parts(json: &str) -> Vec<ContentPart> {
 
 /// `headers` may be NULL (column added with the table but rows can be written
 /// with no extra headers) and is a JSON object when present.
+fn row_to_attachment(row: &Row) -> rusqlite::Result<Attachment> {
+    Ok(Attachment {
+        id: row.get("id")?,
+        message_id: row.get("message_id")?,
+        kind: row.get("kind")?,
+        path: row.get("path")?,
+        processed_path: row.get("processed_path")?,
+        mime: row.get("mime")?,
+        width: row.get::<_, Option<i64>>("width")?.unwrap_or(0) as u32,
+        height: row.get::<_, Option<i64>>("height")?.unwrap_or(0) as u32,
+        bytes: row.get("bytes")?,
+        sha256: row.get("sha256")?,
+        created_at: row.get("created_at")?,
+    })
+}
+
 fn row_to_profile(row: &Row) -> rusqlite::Result<EndpointProfile> {
     let headers_json: Option<String> = row.get("headers")?;
     Ok(EndpointProfile {
@@ -1270,6 +1361,50 @@ mod tests {
 
         let listed = db.list_conversations().await.unwrap();
         assert_eq!(listed[0].digest.as_deref(), Some("task: migrate auth"));
+    }
+
+    /// Attachments (§7.2/§8.2): insert → get, link to a message, list by
+    /// message in creation order.
+    #[tokio::test]
+    async fn attachments_roundtrip_and_link() {
+        let (_dir, db) = temp_db().await;
+
+        let att = Attachment {
+            id: "att_1".into(),
+            message_id: None,
+            kind: "image".into(),
+            path: "C:\\att\\abc.png".into(),
+            processed_path: "C:\\att\\abc_processed.jpg".into(),
+            mime: "image/png".into(),
+            width: 100,
+            height: 50,
+            bytes: 1234,
+            sha256: "abc".into(),
+            created_at: 1000,
+        };
+        db.insert_attachment(att.clone()).await.unwrap();
+
+        // Unlinked: get works, no message rows.
+        let got = db.get_attachment("att_1".into()).await.unwrap().unwrap();
+        assert_eq!(got, att);
+        assert!(db
+            .list_message_attachments("c1".into())
+            .await
+            .unwrap()
+            .is_empty());
+
+        // Link at send time; the message list picks it up. The FK needs a
+        // real message row, so create one (message_id → messages).
+        db.create_conversation("c1".into(), 500).await.unwrap();
+        db.insert_user_message("m9".into(), "c1".into(), Vec::new(), 600)
+            .await
+            .unwrap();
+        db.link_attachment("att_1".into(), "m9".into()).await.unwrap();
+        let listed = db.list_message_attachments("m9".into()).await.unwrap();
+        assert_eq!(listed[0].message_id.as_deref(), Some("m9"));
+
+        // Unknown ids stay None.
+        assert!(db.get_attachment("nope".into()).await.unwrap().is_none());
     }
 
     /// Capability records (§5.4): upsert overwrites per (endpoint, model),

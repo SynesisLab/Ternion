@@ -143,6 +143,8 @@ pub fn app_with_settings(
         pairs.insert(k.to_string(), v.to_string());
     }
     let settings = crate::settings::SettingsCache::new(pairs);
-    let state = AppState::new(db, settings, reqwest::Client::new(), providers);
+    let attachments = dir.path().join("attachments");
+    std::fs::create_dir_all(&attachments).unwrap();
+    let state = AppState::new(db, settings, reqwest::Client::new(), providers, attachments);
     (dir, state)
 }

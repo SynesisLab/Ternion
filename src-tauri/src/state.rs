@@ -33,6 +33,9 @@ pub struct AppState {
     /// Provider registry keyed by endpoint id. `pub(crate)` so tests can seed
     /// extra endpoints (chat.rs multi-endpoint tests).
     pub(crate) providers: RwLock<HashMap<String, Arc<dyn Provider>>>,
+    /// Directory for attachment file bodies (§7.2/§8.1):
+    /// `%APPDATA%\Ternion\attachments\` in production, a temp dir in tests.
+    pub attachments_dir: std::path::PathBuf,
 }
 
 /// Cancellation entry for an in-flight stream.
@@ -48,6 +51,7 @@ impl AppState {
         settings: SettingsCache,
         http: reqwest::Client,
         providers: HashMap<String, Arc<dyn Provider>>,
+        attachments_dir: std::path::PathBuf,
     ) -> Self {
         Self {
             db,
@@ -60,6 +64,7 @@ impl AppState {
             approvals: AsyncMutex::new(HashMap::new()),
             session_grants: AsyncMutex::new(permissions::SessionGrants::default()),
             providers: RwLock::new(providers),
+            attachments_dir,
         }
     }
 

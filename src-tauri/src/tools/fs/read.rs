@@ -18,7 +18,7 @@ impl Tool for FsRead {
     fn spec(&self) -> crate::types::ToolSpec {
         crate::types::ToolSpec {
             name: "fs_read".into(),
-            description: "Read a text file inside a bound workspace, numbered lines. Use offset/limit for ranges (1-based). Images and binary files are not returned as text."
+            description: "Read a text file inside a bound workspace, numbered lines. Use offset/limit for ranges (1-based). Images become attachments (vision models see them on the next turn); binary files are refused."
                 .into(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -42,13 +42,18 @@ impl Tool for FsRead {
             let resolved = super::resolve_arg(&args, ctx, "path")?;
             let offset = arg_usize(&args, "offset", 1, 1, u32::MAX as usize);
             let limit = arg_usize(&args, "limit", DEFAULT_LINES, 1, MAX_LINES);
-            run(&resolved.path, offset, limit).map(ToolOutcome::Ok)
+            run(&resolved.path, offset, limit, ctx.attachments.as_deref())
         })();
         Box::pin(std::future::ready(result))
     }
 }
 
-fn run(path: &std::path::Path, offset: usize, limit: usize) -> Result<String, ToolError> {
+fn run(
+    path: &std::path::Path,
+    offset: usize,
+    limit: usize,
+    attachments: Option<&std::path::Path>,
+) -> Result<ToolOutcome, ToolError> {
     let meta = std::fs::metadata(path).map_err(|_| ToolError::Exec("path not found".into()))?;
     if meta.is_dir() {
         return Err(ToolError::Exec(
@@ -56,15 +61,44 @@ fn run(path: &std::path::Path, offset: usize, limit: usize) -> Result<String, To
         ));
     }
 
-    // Images: metadata reference only — inline vision attachments land in the
-    // vision milestone (§10.5); a text dump would corrupt the context.
+    // Images (§7.3): with an attachments dir in play, the file becomes an
+    // attachment reference the orchestrator inlines for vision models; a
+    // text dump would corrupt the context. Without it (sidecar paths), fall
+    // back to metadata only.
     let mime = mime_for_path(path);
     if mime.starts_with("image/") {
-        return Ok(format!(
-            "[image file: {}]\nmime: {mime}\nsize: {} bytes\n[contents not inlined — image attachment delivery lands with vision support]",
+        if let Some(dir) = attachments {
+            match std::fs::read(path) {
+                Ok(raw) => match crate::img::store(dir, &raw) {
+                    Ok(img) => {
+                        return Ok(ToolOutcome::WithImages {
+                            text: format!(
+                                "[image file attached: {} — {}×{}, {mime}]",
+                                img.sha256, img.width, img.height
+                            ),
+                            images: vec![img],
+                        });
+                    }
+                    Err(e) => {
+                        return Ok(ToolOutcome::Ok(format!(
+                            "[image file: {} — attachment processing failed: {e}]",
+                            path.display()
+                        )));
+                    }
+                },
+                Err(e) => {
+                    return Ok(ToolOutcome::Ok(format!(
+                        "[image file: {} — unreadable: {e}]",
+                        path.display()
+                    )));
+                }
+            }
+        }
+        return Ok(ToolOutcome::Ok(format!(
+            "[image file: {}]\nmime: {mime}\nsize: {} bytes\n[contents not inlined — no attachment sink in this context]",
             path.display(),
             meta.len()
-        ));
+        )));
     }
 
     let bytes = std::fs::read(path).map_err(|e| ToolError::Exec(format!("read: {e}")))?;
@@ -101,7 +135,7 @@ fn run(path: &std::path::Path, offset: usize, limit: usize) -> Result<String, To
         out.push_str(&format!(
             "[no lines in range — the file has {total_lines} line(s)]\n"
         ));
-        return Ok(out);
+        return Ok(ToolOutcome::Ok(out));
     }
     let remaining = total_lines - last_line;
     if remaining > 0 {
@@ -110,16 +144,18 @@ fn run(path: &std::path::Path, offset: usize, limit: usize) -> Result<String, To
             last_line + 1
         ));
     }
-    Ok(out)
+    Ok(ToolOutcome::Ok(out))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::ToolOutcome as Outcome;
 
     fn ctx_with(root: &std::path::Path) -> ToolExecCtx {
         ToolExecCtx {
             workspaces: vec![root.display().to_string()],
+            attachments: None,
         }
     }
 
@@ -132,7 +168,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("f.txt");
         std::fs::write(&p, thirty_lines()).unwrap();
-        let out = run(&p, 1, DEFAULT_LINES).unwrap();
+        let out = run(&p, 1, DEFAULT_LINES, None).unwrap().into_parts().0;
         assert!(out.starts_with("     1 | line 1"), "{out}");
         assert!(out.contains("30 | line 30"));
         assert!(!out.contains("[…"), "whole file fits: {out}");
@@ -143,7 +179,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("f.txt");
         std::fs::write(&p, thirty_lines()).unwrap();
-        let out = run(&p, 5, 3).unwrap();
+        let out = run(&p, 5, 3, None).unwrap().into_parts().0;
         assert!(out.contains("| line 5"), "{out}");
         assert!(out.contains("| line 7"));
         assert!(!out.contains("| line 4"));
@@ -155,7 +191,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("f.txt");
         std::fs::write(&p, "only\n").unwrap();
-        let out = run(&p, 10, 5).unwrap();
+        let out = run(&p, 10, 5, None).unwrap().into_parts().0;
         assert!(out.contains("has 1 line"), "{out}");
     }
 
@@ -164,7 +200,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let sub = dir.path().join("sub");
         std::fs::create_dir(&sub).unwrap();
-        assert!(run(&sub.canonicalize().unwrap(), 1, 10)
+        assert!(run(&sub.canonicalize().unwrap(), 1, 10, None)
             .unwrap_err()
             .message()
             .contains("directory"));
@@ -175,7 +211,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("blob.bin");
         std::fs::write(&p, [0u8, 1, 2, 3]).unwrap();
-        let msg = run(&p.canonicalize().unwrap(), 1, 10).unwrap_err().message();
+        let msg = run(&p.canonicalize().unwrap(), 1, 10, None).unwrap_err().message();
         assert!(msg.contains("binary file"), "{msg}");
         assert!(msg.contains("application/octet-stream"), "{msg}");
     }
@@ -185,16 +221,57 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("pic.png");
         std::fs::write(&p, [0x89, b'P', b'N', b'G']).unwrap();
-        let out = run(&p.canonicalize().unwrap(), 1, DEFAULT_LINES).unwrap();
+        let out = run(&p.canonicalize().unwrap(), 1, DEFAULT_LINES, None)
+            .unwrap()
+            .into_parts()
+            .0;
         assert!(out.contains("image/png"), "{out}");
         assert!(out.contains("contents not inlined"), "{out}");
         assert!(!out.contains('|'), "no line-number dump: {out}");
     }
 
     #[test]
+    fn image_read_captures_an_attachment_when_a_sink_exists() {
+        // §7.3: fs_read on a real image becomes a stored attachment — the
+        // orchestrator turns `images` into image parts for vision models.
+        let dir = tempfile::tempdir().unwrap();
+        let att = tempfile::tempdir().unwrap();
+        let raw = crate::img::tests::make_png(80, 40);
+        let p = dir.path().join("pic.png");
+        std::fs::write(&p, &raw).unwrap();
+
+        let out = run(&p.canonicalize().unwrap(), 1, DEFAULT_LINES, Some(att.path()))
+            .unwrap();
+        let Outcome::WithImages { text, images } = out else {
+            panic!("expected WithImages, got {out:?}")
+        };
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].mime, "image/png");
+        assert_eq!(images[0].width, 80);
+        assert_eq!(images[0].height, 40);
+        assert!(std::path::Path::new(&images[0].processed_path).exists());
+        assert!(text.contains("[image file attached"), "{text}");
+    }
+
+    #[test]
+    fn corrupt_image_reads_fall_back_to_a_note() {
+        let dir = tempfile::tempdir().unwrap();
+        let att = tempfile::tempdir().unwrap();
+        let p = dir.path().join("broken.png");
+        std::fs::write(&p, [0x89, b'P', b'N', b'G']).unwrap(); // truncated
+        let out = run(&p.canonicalize().unwrap(), 1, DEFAULT_LINES, Some(att.path()))
+            .unwrap()
+            .into_parts()
+            .0;
+        assert!(out.contains("attachment processing failed"), "{out}");
+    }
+
+    #[test]
     fn missing_file_is_not_found() {
         let dir = tempfile::tempdir().unwrap();
-        let msg = run(&dir.path().join("nope.txt"), 1, 10).unwrap_err().message();
+        let msg = run(&dir.path().join("nope.txt"), 1, 10, None)
+            .unwrap_err()
+            .message();
         assert!(msg.contains("not found"), "{msg}");
     }
 

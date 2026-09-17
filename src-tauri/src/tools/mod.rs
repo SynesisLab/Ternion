@@ -12,17 +12,27 @@ pub mod guard;
 pub mod shell;
 
 /// Execution context handed to tools: the conversation's canonical workspace
-/// roots (§6.3 — the only folders FS tools may touch). Tool results fed to
-/// the model are always treated as untrusted text (§10.3).
+/// roots (§6.3 — the only folders FS tools may touch), plus the attachments
+/// directory when images produced by tools should be captured (§7.3: fs_read
+/// on an image becomes an attachment). Tool results fed to the model are
+/// always treated as untrusted text (§10.3).
 #[derive(Debug, Clone, Default)]
 pub struct ToolExecCtx {
     pub workspaces: Vec<String>,
+    /// None in tool-free sidecar paths; set to the attachments dir otherwise.
+    pub attachments: Option<std::path::PathBuf>,
 }
 
 /// Terminal state of one executed tool call (§6.1).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ToolOutcome {
     Ok(String),
+    /// Text plus image files captured during execution (§7.3): the
+    /// orchestrator persists the rows and attaches image parts.
+    WithImages {
+        text: String,
+        images: Vec<crate::img::StoredImage>,
+    },
     Err(String),
 }
 
@@ -30,6 +40,7 @@ impl ToolOutcome {
     pub fn into_parts(self) -> (String, bool) {
         match self {
             ToolOutcome::Ok(text) => (text, false),
+            ToolOutcome::WithImages { text, .. } => (text, false),
             ToolOutcome::Err(text) => (text, true),
         }
     }
