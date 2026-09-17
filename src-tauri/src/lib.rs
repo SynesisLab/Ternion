@@ -48,6 +48,9 @@ pub fn run() {
         // frontend wiring in a later step; the plugin + signing config arm
         // the release pipeline now.
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // §7.1/§9.3 hotkeys — the plugin's state is what `app.global_shortcut()`
+        // resolves; without this registration setup panics (state before manage).
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             commands::ping,
             commands::open_external,
@@ -165,24 +168,27 @@ pub fn run() {
 
             // §7.1/§9.3 quick capture hotkeys (hotkeys get a settings screen
             // in M4; v1 is fixed): `Win+Alt+S` opens the drag-region overlay,
-            // `Win+Alt+T` toggles the quick-ask palette.
+            // `Win+Alt+T` toggles the quick-ask palette. Global hotkeys are
+            // system-wide — any running app may already own a combo (Win32
+            // answers RegisterHotKey with ERROR_HOTKEY_ALREADY_REGISTERED),
+            // so registration is best-effort: the accelerator is lost, the
+            // app is not.
             use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
-            app.global_shortcut()
-                .on_shortcut("alt+super+s", |app, _shortcut, event| {
-                    if event.state == ShortcutState::Pressed {
-                        commands::capture::open_capture_overlay(app, "main");
-                    }
-                })
-                .and_then(|()| {
-                    app.global_shortcut().on_shortcut("alt+super+t", |app, _shortcut, event| {
-                        if event.state == ShortcutState::Pressed {
-                            commands::quick::open_quick_window(app);
-                        }
-                    })
-                })
-                .map_err(|e| -> Box<dyn std::error::Error> {
-                    format!("register capture hotkey: {e}").into()
-                })?;
+            let shortcuts = app.global_shortcut();
+            if let Err(e) = shortcuts.on_shortcut("alt+super+s", |app, _shortcut, event| {
+                if event.state == ShortcutState::Pressed {
+                    commands::capture::open_capture_overlay(app, "main");
+                }
+            }) {
+                log::warn!("Win+Alt+S unavailable (another app owns it?): {e}");
+            }
+            if let Err(e) = shortcuts.on_shortcut("alt+super+t", |app, _shortcut, event| {
+                if event.state == ShortcutState::Pressed {
+                    commands::quick::open_quick_window(app);
+                }
+            }) {
+                log::warn!("Win+Alt+T unavailable (another app owns it?): {e}");
+            }
 
             Ok(())
         })
