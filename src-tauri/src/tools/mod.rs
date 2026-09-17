@@ -9,6 +9,7 @@ use futures::future::BoxFuture;
 
 pub mod fs;
 pub mod guard;
+pub mod shell;
 
 /// Execution context handed to tools: the conversation's canonical workspace
 /// roots (§6.3 — the only folders FS tools may touch). Tool results fed to
@@ -73,12 +74,14 @@ impl Default for ToolRegistry {
 }
 
 impl ToolRegistry {
-    /// The bundled tool set (design §6.2): five auto-allowed FS reads plus
-    /// the six mutating FS tools, every one of which is gated by the §6.6
-    /// permission matrix before execution.
+    /// The bundled tool set (design §6.2): five auto-allowed FS reads, the
+    /// six mutating FS tools (§6.6 matrix), and the opt-in shell tool. The
+    /// orchestrator filters the shell spec by the `tools.shell_enabled`
+    /// setting — the registry stays complete for MCP-style lookups (M3).
     pub fn bundled() -> Self {
         let mut tools = fs::bundled_read_tools();
         tools.extend(fs::bundled_mutating_tools());
+        tools.push(Arc::new(shell::Shell));
         Self { tools }
     }
 
@@ -314,11 +317,11 @@ mod tests {
     fn registry_specs_and_lookup() {
         let reg = ToolRegistry::bundled();
         assert!(!reg.is_empty());
-        // 5 auto-allowed reads (M2.4) + 6 gated mutators (M2.6).
-        assert_eq!(reg.specs().len(), 11);
+        // 5 auto-allowed reads (M2.4) + 6 gated mutators (M2.6) + shell (M2.7).
+        assert_eq!(reg.specs().len(), 12);
         for name in [
             "fs_list", "fs_read", "fs_stat", "fs_search", "fs_tree", "fs_write", "fs_edit",
-            "fs_move", "fs_copy", "fs_delete", "fs_mkdir",
+            "fs_move", "fs_copy", "fs_delete", "fs_mkdir", "shell",
         ] {
             assert!(reg.get(name).is_some(), "{name} registered");
         }

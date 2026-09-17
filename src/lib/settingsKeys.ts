@@ -8,6 +8,10 @@ export const settingsKeys = {
   appCloseToTray: "app.close_to_tray",
   uiTheme: "ui.theme",
 
+  // Tool runtime (§6)
+  toolsMaxHops: "tools.max_hops",
+  toolsShellEnabled: "tools.shell_enabled",
+
   // Triad router (M1, design §3.5)
   triadEnabled: "triad.enabled",
   triadSkipRouter: "triad.skip_router",

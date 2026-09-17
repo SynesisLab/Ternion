@@ -52,6 +52,9 @@ export const en = {
   "settings.permissions.session": "Session grants",
   "settings.permissions.clearSession": "Clear session grants",
   "settings.permissions.empty": "No remembered grants.",
+  "settings.shell.enabled": "Enable shell tool",
+  "settings.shell.enabledHint":
+    "Let the model run PowerShell commands in bound workspaces. Every command is approved by you first.",
 
   // Triad routing (M1)
   "chat.pin.auto": "Auto",

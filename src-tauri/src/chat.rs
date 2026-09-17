@@ -236,11 +236,21 @@ async fn stream_once(
     //    `<tool_result>` message appended → it continues, up to `max_hops`,
     //    then a forced no-tools summary. With no workspace bound the model
     //    has zero FS access (§6.3) — no `tools` array at all, M0 behavior.
+    //    The shell tool additionally requires its opt-in setting (§6.2).
     //    MCP servers (M3) extend this predicate beyond workspace-bound tools.
+    let shell_enabled = state
+        .settings
+        .get_or(crate::settings::keys::TOOLS_SHELL_ENABLED, "false")
+        != "false";
     let tool_specs = if conv.workspace_roots.is_empty() {
         Vec::new()
     } else {
-        state.tool_registry.specs()
+        state
+            .tool_registry
+            .specs()
+            .into_iter()
+            .filter(|s| s.name != "shell" || shell_enabled)
+            .collect::<Vec<_>>()
     };
     let mut all_text = String::new();
     let mut all_reasoning = String::new();
@@ -580,7 +590,7 @@ async fn execute_tool_call(
 
     // ---- §6.6 permission matrix ----------------------------------------
     let mut permission_mode = "auto".to_string();
-    if crate::permissions::is_mutating(&call.name) {
+    if crate::permissions::needs_gate(&call.name) {
         // One guard resolution up front, shared by the payload and the
         // edit-in-place rewrite (None when the target doesn't exist yet).
         let path_key = crate::permissions::main_path_key(&call.name);
@@ -652,6 +662,10 @@ async fn resolve_policy(
     args: &serde_json::Value,
     workspaces: &[String],
 ) -> String {
+    // Shell asks every time — no session/always shortcuts (§6.2).
+    if !crate::permissions::grantable(tool) {
+        return "ask".to_string();
+    }
     // The matrix keys on the root that contains the affected path. If the
     // raw arg names no bound workspace the tool itself will fail the guard;
     // the gate stays on the safe side (ask).
@@ -769,13 +783,13 @@ async fn request_approval(
         return Ok(ApprovalDecision::Denied);
     }
     let mode = match reply.mode.as_str() {
-        "session" => {
+        "session" if crate::permissions::grantable(&tool) => {
             if let Some(root) = matrix_root(workspaces, &raw) {
                 state.session_grants.lock().await.grant(&tool, &root);
             }
             "session".to_string()
         }
-        "always" => {
+        "always" if crate::permissions::grantable(&tool) => {
             if let Some(root) = matrix_root(workspaces, &raw) {
                 state
                     .db
@@ -2277,6 +2291,46 @@ mod tests {
         assert_eq!(matrix_root(&ws, r"c:\WORK\a.txt").as_deref(), Some("C:\\work"));
         assert_eq!(matrix_root(&ws, "rel.txt").as_deref(), Some("C:\\work"));
         assert_eq!(matrix_root(&ws, r"D:\other\a.txt"), None);
+    }
+
+    #[tokio::test]
+    async fn shell_spec_follows_the_opt_in_setting() {
+        let provider = FakeProvider::scripted(main_stream("hi", 2));
+        let received = provider.received.clone();
+        let (_dir, mut state) = app_with_settings(
+            provider,
+            &[(keys::TOOLS_SHELL_ENABLED, "true")],
+        );
+        create_conv(&state).await;
+        let _root = bind_root_keep(&state, "c1").await;
+
+        let collected = Arc::new(Mutex::new(Vec::new()));
+        let sink = collected.clone();
+        let forward = Arc::new(move |ev: &StreamEvent| {
+            sink.lock().unwrap_or_else(|p| p.into_inner()).push(ev.clone())
+        }) as Arc<dyn Fn(&StreamEvent) + Send + Sync>;
+        send(&state, args("hi"), forward).await.unwrap();
+        let reqs = received.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let specs = reqs[0].tools.as_ref().expect("workspace bound");
+        assert!(
+            specs.iter().any(|s| s.name == "shell"),
+            "shell opt-in on ⇒ spec declared"
+        );
+
+        // Off: the spec disappears (default off — verify separately).
+        let provider2 = FakeProvider::scripted(main_stream("hi", 2));
+        let received2 = provider2.received.clone();
+        let (_dir2, state2) = app_with(provider2);
+        create_conv(&state2).await;
+        let _root2 = bind_root_keep(&state2, "c1").await;
+        chat_send_inner(&state2, args("hi")).await.unwrap();
+        let reqs2 = received2.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let specs2 = reqs2[0].tools.as_ref().unwrap();
+        assert!(
+            !specs2.iter().any(|s| s.name == "shell"),
+            "shell is opt-in — off by default: {:?}",
+            specs2.iter().map(|s| s.name.clone()).collect::<Vec<_>>()
+        );
     }
 
     #[test]

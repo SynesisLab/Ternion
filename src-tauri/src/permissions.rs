@@ -13,13 +13,28 @@
 use std::collections::HashSet;
 
 /// Tools that mutate the filesystem — every one of them is gated by the
-/// matrix. Reads are auto-allowed (§6.2, M2.4) and never gate.
+/// matrix and may hold session/always grants. Reads are auto-allowed
+/// (§6.2, M2.4) and never gate.
 pub const MUTATING_TOOLS: &[&str] = &[
     "fs_write", "fs_edit", "fs_move", "fs_copy", "fs_delete", "fs_mkdir",
 ];
 
 pub fn is_mutating(tool: &str) -> bool {
     MUTATING_TOOLS.contains(&tool)
+}
+
+/// Every tool the matrix gates: the mutators plus `shell`, which asks on
+/// every call — arbitrary commands can never be whitelisted (§6.6).
+pub const GATED_TOOLS: &[&str] = &["shell"];
+
+pub fn needs_gate(tool: &str) -> bool {
+    is_mutating(tool) || GATED_TOOLS.contains(&tool)
+}
+
+/// Whether a tool may hold a session/always grant at all. Shell is excluded:
+/// approving one command must never pre-approve the next.
+pub fn grantable(tool: &str) -> bool {
+    is_mutating(tool)
 }
 
 /// The path argument key a tool's matrix lookup keys on (fs_move/fs_copy
@@ -58,9 +73,17 @@ mod tests {
     fn mutating_tool_set_is_the_fs_mutators() {
         for tool in MUTATING_TOOLS {
             assert!(is_mutating(tool), "{tool} must gate");
+            assert!(needs_gate(tool), "{tool} must gate");
+            assert!(grantable(tool), "{tool} must be grantable");
         }
-        for read in ["fs_list", "fs_read", "fs_stat", "fs_search", "fs_tree", "echo", "ctx"] {
+        assert!(needs_gate("shell"), "shell always gates (§6.2/§6.6)");
+        assert!(!grantable("shell"), "shell asks every time");
+        for read in [
+            "fs_list", "fs_read", "fs_stat", "fs_search", "fs_tree", "echo", "ctx",
+        ] {
             assert!(!is_mutating(read), "{read} must not gate");
+            assert!(!needs_gate(read), "{read} must not gate");
+            assert!(!grantable(read), "{read} must not be grantable");
         }
     }
 

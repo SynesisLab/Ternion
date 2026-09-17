@@ -15,6 +15,8 @@ pub mod keys {
 
     // Tool runtime (design §6.1).
     pub const TOOLS_MAX_HOPS: &str = "tools.max_hops";
+    /// Shell tool opt-in (§6.2): off until the user enables it.
+    pub const TOOLS_SHELL_ENABLED: &str = "tools.shell_enabled";
 
     // Triad v1 (design §3) — mirrors `router/config.rs`. Keep in sync.
     pub const TRIAD_ENABLED: &str = "triad.enabled";
