@@ -60,6 +60,7 @@ export function SettingsDialog({
   const [contextTokens, setContextTokens] = useState(DEFAULT_CONTEXT_TOKENS);
   const [keepAlive, setKeepAlive] = useState(DEFAULT_KEEP_ALIVE);
   const [closeToTray, setCloseToTray] = useState(true);
+  const [localOnly, setLocalOnly] = useState(false);
   const [shellEnabled, setShellEnabled] = useState(false);
   const [test, setTest] = useState<TestState>("idle");
   const [saved, setSaved] = useState(false);
@@ -97,13 +98,14 @@ export function SettingsDialog({
       .then(setProfiles)
       .catch(() => setProfiles([]));
     void (async () => {
-      const [url, temp, ctx, ka, tray, shell] = await Promise.all([
+      const [url, temp, ctx, ka, tray, shell, privacy] = await Promise.all([
         getSetting(settingsKeys.ollamaBaseUrl),
         getSetting(settingsKeys.chatTemperature),
         getSetting(settingsKeys.chatContextTokens),
         getSetting(settingsKeys.chatKeepAlive),
         getSetting(settingsKeys.appCloseToTray),
         getSetting(settingsKeys.toolsShellEnabled),
+        getSetting(settingsKeys.privacyLocalOnly),
       ]);
       setBaseUrl(url ?? DEFAULT_BASE_URL);
       setTemperature(temp ?? DEFAULT_TEMPERATURE);
@@ -111,6 +113,7 @@ export function SettingsDialog({
       setKeepAlive(ka ?? DEFAULT_KEEP_ALIVE);
       setCloseToTray((tray ?? "true") !== "false");
       setShellEnabled(shell === "true");
+      setLocalOnly(privacy === "true");
 
       const k = settingsKeys;
       const triad = await Promise.all([
@@ -154,6 +157,7 @@ export function SettingsDialog({
     setContextTokens(DEFAULT_CONTEXT_TOKENS);
     setKeepAlive(DEFAULT_KEEP_ALIVE);
     setCloseToTray(true);
+    setLocalOnly(false);
     setShellEnabled(false);
     setTriadEnabled(true);
     setSkipRouter(false);
@@ -193,6 +197,7 @@ export function SettingsDialog({
       ),
       setSetting(k.chatKeepAlive, keepAlive.trim() || DEFAULT_KEEP_ALIVE),
       setSetting(k.appCloseToTray, String(closeToTray)),
+      setSetting(k.privacyLocalOnly, String(localOnly)),
       setSetting(k.toolsShellEnabled, String(shellEnabled)),
       setSetting(k.triadEnabled, String(triadEnabled)),
       setSetting(k.triadSkipRouter, String(skipRouter)),
@@ -328,6 +333,22 @@ export function SettingsDialog({
                 className="accent-[color:var(--color-accent)]"
               />
               {t("settings.closeToTray")}
+            </label>
+
+            {/* Privacy (§3.10) */}
+            <label className="block">
+              <span className="flex items-center gap-2 text-sm text-[color:var(--color-ink)]">
+                <input
+                  type="checkbox"
+                  checked={localOnly}
+                  onChange={(e) => setLocalOnly(e.target.checked)}
+                  className="accent-[color:var(--color-accent)]"
+                />
+                {t("settings.privacy.localOnly")}
+              </span>
+              <span className="mt-1 block pl-6 text-xs text-[color:var(--color-muted)]">
+                {t("settings.privacy.localOnlyHint")}
+              </span>
             </label>
 
             {/* Shell tool opt-in (§6.2) */}

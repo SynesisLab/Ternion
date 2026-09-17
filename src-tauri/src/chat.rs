@@ -1166,7 +1166,15 @@ async fn route_turn(
                     .max(0) as usize;
                 apply_capability_facts(state, &cfg, &mut ctx);
 
-                let herald_decision = match cfg.roles.herald.as_deref() {
+                // §3.10: local-only mode also applies to Herald — a cloud
+                // herald is treated as down and the heuristic router decides
+                // instead (its Titan choice still passes the local gate).
+                let herald_ref = cfg
+                    .roles
+                    .herald
+                    .as_deref()
+                    .filter(|r| !cfg.local_only || is_local_ref(r));
+                let herald_decision = match herald_ref {
                     Some(herald_ref) => {
                         // Herald may live on any endpoint (§5.1) — its
                         // reference carries the endpoint dimension too.
@@ -1223,6 +1231,32 @@ async fn route_turn(
                     .unwrap_or_else(|| args.model.as_str())
                     .to_string();
                 keep_alive = role_keep_alive(decision.target, &cfg);
+            }
+        }
+    }
+
+    // §3.10 privacy mode: cloud endpoints are disabled app-wide. A
+    // resolution that landed on one falls back to the local role
+    // assignment, else the picked model; with neither available the turn
+    // fails loudly instead of quietly leaving privacy mode.
+    if cfg.local_only && !is_local_ref(&model) {
+        match local_fallback(&cfg, decision.target, &args.model) {
+            Some((sub_role, local)) => {
+                model = local;
+                if let Some(r) = sub_role {
+                    role = Some(r);
+                    keep_alive = role_keep_alive(decision.target, &cfg);
+                }
+                decision.reason = format!(
+                    "local-only mode: cloud endpoint suppressed, using local {}",
+                    decision.target.as_str(),
+                );
+            }
+            None => {
+                return Err(CmdError::new(
+                    "local_only",
+                    "local-only mode is on but no local model is available — assign local Scout/Titan roles or turn local-only off",
+                ));
             }
         }
     }
@@ -1337,6 +1371,33 @@ fn apply_capability_facts(state: &AppState, cfg: &TriadConfig, ctx: &mut policy:
 /// registry); explicit pins keep their model — user intent — and surface
 /// `vision_gap` so the UI can show a warning chip with a one-click fix.
 /// Unknown capabilities disable rather than guess (§3.5 rule 2).
+/// §3.10: does a model reference ride the built-in local endpoint? Bare
+/// refs (pre-M3 settings) are local by definition.
+fn is_local_ref(model_ref: &str) -> bool {
+    let (endpoint, _) = crate::providers::parse_model_ref(model_ref);
+    endpoint.map(|e| e == DEFAULT_ENDPOINT).unwrap_or(true)
+}
+
+/// §3.10: the local substitute for a cloud resolution — the local role
+/// assignment for the routed target, else the picked fallback model. `None`
+/// means the turn fails with a clear error rather than leaving privacy mode.
+fn local_fallback(
+    cfg: &TriadConfig,
+    target: Target,
+    fallback: &str,
+) -> Option<(Option<ModelRole>, String)> {
+    let role_local = cfg
+        .roles
+        .model_for(target)
+        .filter(|m| is_local_ref(m))
+        .map(str::to_string);
+    match role_local {
+        Some(m) => Some((Some(role_of(target)), m)),
+        None if is_local_ref(fallback) => Some((None, fallback.to_string())),
+        None => None,
+    }
+}
+
 fn enforce_vision(
     state: &AppState,
     cfg: &TriadConfig,
@@ -1359,8 +1420,12 @@ fn enforce_vision(
     // Vision-capable alternative, in preference order: the scout role
     // model, then the titan role model, then anything the registry knows.
     // Titan-routed turns never de-escalate to scout (the policy engine may
-    // have escalated for context/complexity reasons, §3.5).
-    let capable = |m: &str| state.registry_model(m).filter(has_vision).is_some();
+    // have escalated for context/complexity reasons, §3.5). §3.10: in
+    // local-only mode the search never leaves the built-in endpoint.
+    let local_only = cfg.local_only;
+    let local_ok = |m: &str| !local_only || is_local_ref(m);
+    let capable =
+        |m: &str| local_ok(m) && state.registry_model(m).filter(has_vision).is_some();
     let scout_ref = cfg.roles.scout.as_deref();
     let titan_ref = cfg.roles.titan.as_deref();
     let upgrade = if decision.target == Target::Titan {
@@ -1369,7 +1434,7 @@ fn enforce_vision(
             .read()
             .unwrap_or_else(|p| p.into_inner())
             .iter()
-            .find(|m| has_vision(m))
+            .find(|m| has_vision(m) && (!local_only || m.endpoint_id == DEFAULT_ENDPOINT))
             .map(|m| m.id.clone())
     } else {
         scout_ref
@@ -1383,7 +1448,7 @@ fn enforce_vision(
                     .read()
                     .unwrap_or_else(|p| p.into_inner())
                     .iter()
-                    .find(|m| has_vision(m))
+                    .find(|m| has_vision(m) && (!local_only || m.endpoint_id == DEFAULT_ENDPOINT))
                     .map(|m| m.id.clone())
             })
     };
@@ -2630,6 +2695,172 @@ mod tests {
         );
     }
 
+    // -- M4.5: local-only mode (§3.10) ---------------------------------------
+
+    #[tokio::test]
+    async fn local_only_suppresses_a_cloud_pinned_model() {
+        // §3.10: with privacy mode on, a pin pointing at a cloud profile
+        // falls back to the local Scout assignment; the remote endpoint
+        // never sees a request.
+        let local = FakeProvider::scripted(main_stream("local answer", 5));
+        let remote = FakeProvider::scripted(main_stream("should not run", 1));
+        let local_received = local.received.clone();
+        let remote_received = remote.received.clone();
+
+        let (_dir, state) = app_with_settings(
+            local,
+            &[
+                (keys::TRIAD_ROLE_SCOUT, "scout-model"),
+                (keys::PRIVACY_LOCAL_ONLY, "true"),
+            ],
+        );
+        state
+            .providers
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert("ep_remote".to_string(), Arc::new(remote));
+
+        create_conv(&state).await;
+        state
+            .db
+            .set_conversation_model("c1".into(), Some("big@ep_remote".into()))
+            .await
+            .unwrap();
+
+        let mut send_args = args("hello");
+        send_args.model = "fallback-model".into();
+        chat_send_inner(&state, send_args).await.unwrap();
+
+        let remote_reqs = remote_received
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        assert!(remote_reqs.is_empty(), "cloud endpoints are disabled");
+        let local_reqs = local_received
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        assert_eq!(local_reqs.len(), 1);
+        assert_eq!(local_reqs[0].model, "scout-model");
+
+        let msgs = messages(&state).await;
+        assert_eq!(msgs[1].model_id.as_deref(), Some("scout-model"));
+        assert_eq!(msgs[1].model_role, Some(ModelRole::Scout));
+        let events = state.db.list_routing_events("c1".into(), 10).await.unwrap();
+        assert!(
+            events[0].decision.reason.contains("local-only"),
+            "{:?}",
+            events[0].decision.reason
+        );
+    }
+
+    #[tokio::test]
+    async fn local_only_fails_loudly_without_local_models() {
+        // No local role assignment and a cloud picked model: the turn
+        // errors instead of silently leaving privacy mode.
+        let local = FakeProvider::scripted(main_stream("should not run", 1));
+        let (_dir, state) =
+            app_with_settings(local, &[(keys::PRIVACY_LOCAL_ONLY, "true")]);
+        create_conv(&state).await;
+        state
+            .db
+            .set_conversation_model("c1".into(), Some("big@ep_remote".into()))
+            .await
+            .unwrap();
+
+        let mut send_args = args("hello");
+        send_args.model = "gpt@ep_remote".into();
+        let err = chat_send_inner(&state, send_args).await.unwrap_err();
+        assert_eq!(err.code, "local_only");
+        let msgs = messages(&state).await;
+        // Only the provisional placeholder exists — still status streaming,
+        // the same residue any pre-stream routing error leaves behind.
+        assert_eq!(msgs.len(), 2, "no assistant answer was produced");
+        assert_eq!(msgs[1].status, MessageStatus::Streaming);
+    }
+
+    #[tokio::test]
+    async fn local_only_herald_is_treated_as_down() {
+        // §3.10: a cloud herald must not be called in privacy mode; the
+        // heuristic router decides (its titan pick still passes the gate —
+        // here the simple content routes to the local scout).
+        let local = FakeProvider::scripted(main_stream("local answer", 5));
+        let remote = FakeProvider::scripted(main_stream("should not run", 1));
+        let local_received = local.received.clone();
+        let remote_received = remote.received.clone();
+
+        let (_dir, state) = app_with_settings(
+            local,
+            &[
+                (keys::TRIAD_ROLE_HERALD, "gpt-small@ep_remote"),
+                (keys::TRIAD_ROLE_SCOUT, "scout-model"),
+                (keys::PRIVACY_LOCAL_ONLY, "true"),
+            ],
+        );
+        state
+            .providers
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert("ep_remote".to_string(), Arc::new(remote));
+
+        create_conv(&state).await;
+        chat_send_inner(&state, args("What is 15% of 82?")).await.unwrap();
+
+        let remote_reqs = remote_received
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        assert!(remote_reqs.is_empty(), "cloud herald must not be called");
+        let local_reqs = local_received
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        assert_eq!(local_reqs.len(), 1);
+        assert_eq!(local_reqs[0].model, "scout-model");
+        let events = state.db.list_routing_events("c1".into(), 10).await.unwrap();
+        assert_eq!(events[0].decision.source, DecisionSource::Heuristic);
+    }
+
+    #[tokio::test]
+    async fn vision_upgrade_respects_local_only() {
+        // §3.10: the only vision-capable model lives on a cloud endpoint —
+        // in privacy mode the search stays local, finds nothing, and the
+        // manual pin keeps the turn with a bare warning.
+        let local = FakeProvider::scripted(main_stream("text-only answer", 5));
+        let (_dir, state) = app_with_settings(
+            local,
+            &[
+                (keys::TRIAD_ROLE_TITAN, "titan"),
+                (keys::PRIVACY_LOCAL_ONLY, "true"),
+            ],
+        );
+        *state.model_registry.write().unwrap_or_else(|p| p.into_inner()) = vec![
+            reg_model("pinned-model", DEFAULT_ENDPOINT, &["completion"]),
+            reg_model("vl@ep_remote", "ep_remote", &["completion", "vision"]),
+        ];
+
+        create_conv(&state).await;
+        state
+            .db
+            .set_conversation_model("c1".into(), Some("pinned-model".into()))
+            .await
+            .unwrap();
+        let att_id = seed_attachment(&state).await;
+        let mut send_args = args("what is this?");
+        send_args.attachment_ids = vec![att_id];
+        chat_send_inner(&state, send_args).await.unwrap();
+
+        let msgs = messages(&state).await;
+        assert_eq!(msgs[1].model_id.as_deref(), Some("pinned-model"));
+        let events = state.db.list_routing_events("c1".into(), 10).await.unwrap();
+        assert_eq!(events[0].decision.source, DecisionSource::Manual);
+        assert_eq!(
+            events[0].decision.vision_gap.as_deref(),
+            Some(""),
+            "the cloud vision model is invisible to the local-only search"
+        );
+    }
+
     #[tokio::test]
     async fn vision_gap_without_alternative_warns_bare() {
         let local = FakeProvider::scripted(main_stream("text-only", 3));
@@ -2949,7 +3180,7 @@ mod tests {
     async fn shell_spec_follows_the_opt_in_setting() {
         let provider = FakeProvider::scripted(main_stream("hi", 2));
         let received = provider.received.clone();
-        let (_dir, mut state) = app_with_settings(
+        let (_dir, state) = app_with_settings(
             provider,
             &[(keys::TOOLS_SHELL_ENABLED, "true")],
         );

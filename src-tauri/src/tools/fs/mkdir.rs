@@ -4,8 +4,6 @@
 use futures::future::BoxFuture;
 
 use super::super::{Tool, ToolError, ToolExecCtx, ToolOutcome};
-#[cfg(test)]
-use super::resolve_new_arg;
 
 pub struct FsMkdir;
 

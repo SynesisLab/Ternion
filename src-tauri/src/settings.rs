@@ -13,6 +13,9 @@ pub mod keys {
     pub const APP_CLOSE_TO_TRAY: &str = "app.close_to_tray";
     pub const UI_THEME: &str = "ui.theme";
 
+    // Privacy (§3.10): local-only mode suppresses cloud endpoints app-wide.
+    pub const PRIVACY_LOCAL_ONLY: &str = "privacy.local_only";
+
     // Tool runtime (design §6.1).
     pub const TOOLS_MAX_HOPS: &str = "tools.max_hops";
     /// Shell tool opt-in (§6.2): off until the user enables it.

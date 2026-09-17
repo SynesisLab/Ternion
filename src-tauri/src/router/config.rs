@@ -84,6 +84,9 @@ pub struct TriadConfig {
     /// flag class → delta applied on top of `min_confidence` for
     /// Herald-Titan decisions carrying that class.
     pub adaptive_bumps: HashMap<String, f32>,
+    /// §3.10 privacy mode: cloud (non-builtin) endpoints are disabled
+    /// app-wide; routing falls back to local roles only. Off by default.
+    pub local_only: bool,
 }
 
 impl Default for TriadConfig {
@@ -107,6 +110,7 @@ impl Default for TriadConfig {
             titan_keep_alive: "3m".into(),
             adaptive_enabled: false,
             adaptive_bumps: HashMap::new(),
+            local_only: false,
         }
     }
 }
@@ -188,6 +192,9 @@ impl TriadConfig {
         if let Some(v) = get(keys::TRIAD_ADAPTIVE_ENABLED) {
             cfg.adaptive_enabled = v == "true";
         }
+        if let Some(v) = get(keys::PRIVACY_LOCAL_ONLY) {
+            cfg.local_only = v == "true";
+        }
         // Bump rows are dynamic (one per flag class); anything under the
         // bump prefix that parses as f32 counts.
         for (k, v) in pairs.iter() {
@@ -223,6 +230,7 @@ fn snapshot(settings: &SettingsCache) -> HashMap<String, String> {
         keys::TRIAD_SCOUT_KEEP_ALIVE,
         keys::TRIAD_TITAN_KEEP_ALIVE,
         keys::TRIAD_ADAPTIVE_ENABLED,
+        keys::PRIVACY_LOCAL_ONLY,
     ];
     let mut out: HashMap<String, String> = KEYS
         .iter()

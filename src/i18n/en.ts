@@ -196,6 +196,9 @@ export const en = {
   "settings.contextTokens": "Context tokens",
   "settings.keepAlive": "Keep alive",
   "settings.closeToTray": "Close to tray (keep running in background)",
+  "settings.privacy.localOnly": "Local-only mode",
+  "settings.privacy.localOnlyHint":
+    "Disable cloud endpoints app-wide — routing falls back to local models only. Also in the tray menu.",
   "settings.reset": "Reset defaults",
   "settings.saved": "Saved",
   "settings.close": "Cancel",

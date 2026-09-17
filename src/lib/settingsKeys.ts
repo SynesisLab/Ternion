@@ -7,6 +7,7 @@ export const settingsKeys = {
   chatKeepAlive: "chat.keep_alive",
   appCloseToTray: "app.close_to_tray",
   uiTheme: "ui.theme",
+  privacyLocalOnly: "privacy.local_only",
 
   // Tool runtime (§6)
   toolsMaxHops: "tools.max_hops",
