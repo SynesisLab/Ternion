@@ -7,7 +7,7 @@ It speaks native Ollama and any OpenAI-compatible endpoint. See
 [DESIGN.md](./DESIGN.md) for the full product design (the Triad system:
 Herald / Scout / Titan routing).
 
-## Status — M0 (Foundation) + M1 (Triad router) complete
+## Status — M0 + M1 (Triad router) + M2 (tools & file-system agency) complete
 
 **Foundation (M0)**
 
@@ -42,8 +42,38 @@ Herald / Scout / Titan routing).
 - **Router log**: per-conversation drawer showing every decision's source,
   confidence, estimated tokens, and override kind
 
-Later milestones: tools & file-system agency (M2), vision & multi-endpoint
-(M3), polish/i18n/signing (M4).
+**Tools & file-system agency (M2)** — DESIGN.md §6:
+
+- **Workspaces**: bind up to 3 folders per chat (header bar); with no
+  workspace bound the model has zero file access — the `tools` array is not
+  even declared
+- **Windows path guard (§6.3)**: every model-supplied path resolves through
+  canonicalize + case-insensitive prefix checks — no verbatim-prefixed
+  drives, no `..` escapes, no device names (`CON`, `NUL`), no junction
+  escapes; creation paths probe the deepest existing ancestor
+- **Read tools (auto-allowed)**: `fs_list`, `fs_read` (numbered lines,
+  offset/limit), `fs_stat`, `fs_search` (bundled ripgrep engine — regex,
+  glob filter, honors `.gitignore`), `fs_tree`; every result capped with an
+  explicit truncation note
+- **Mutating tools (permission matrix §6.6)**: `fs_write` (atomic
+  tmp+rename, append mode), `fs_edit` (exact-string replace), `fs_move`,
+  `fs_copy`, `fs_delete` (Recycle Bin only — never permanent), `fs_mkdir`
+- **Approvals**: Ask / Allow-for-session / Always-for-folder per
+  (tool × workspace); an approval modal with a unified diff and the full
+  resulting content for fs_write/fs_edit, including Edit-in-place (the
+  user's version becomes the tool's own argument); the stream pauses, never
+  cancels, while a request is pending; Stop denies the pending call.
+  Managed in Settings → Permissions
+- **Shell tool (opt-in)**: `shell` runs PowerShell (7 → 5.1 fallback) with
+  the cwd pinned inside the workspace; output capped at 8 KB, killed on
+  timeout, and every single command is approved — shell commands are never
+  whitelisted
+- **Tool loop**: validate → permission gate → execute → `<tool_result
+  source="untrusted">` fed back to the model, up to `tools.max_hops` (12)
+  then a forced no-tools summary; every call persisted with its outcome and
+  permission mode; live tool activity renders in the chat
+
+Later milestones: vision & multi-endpoint (M3), polish/i18n/signing (M4).
 
 ## Prerequisites
 
