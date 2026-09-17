@@ -326,6 +326,23 @@ pub struct ModelInfo {
     pub endpoint_id: String,
 }
 
+/// Capability record for one `(endpoint, model)` — design §5.4/§8.2. Discovery
+/// fills what it can; user edits (or an /api/show verify) win per field and
+/// survive discovery gaps. `role` is schema forward-compat only in v1.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelRecord {
+    pub endpoint_id: String,
+    pub model: String,
+    /// e.g. ["vision", "tools", "thinking"] — empty means "no override".
+    pub capabilities: Vec<String>,
+    pub context_tokens: Option<u32>,
+    pub role: Option<String>,
+    pub vram_estimate_gb: Option<f64>,
+    /// Last confirmation (auto-probe or manual save), ms since epoch.
+    pub verified_at: Option<i64>,
+}
+
 /// User-managed endpoint profile (design §5.1). The built-in local Ollama
 /// (`ep_local_ollama`, from the `ollama.base_url` setting) is synthesized, not
 /// a table row. `api_key_ref` is a keyring handle — the secret is read from

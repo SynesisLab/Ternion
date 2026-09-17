@@ -17,7 +17,8 @@ use crate::{
     error::CmdError,
     types::{
         ChatRole, ContentPart, Conversation, EndpointProfile, Message, MessageRouting,
-        MessageStatus, ModelRole, RoutingDecision, RoutingEvent, Target, ToolCallRow,
+        MessageStatus, ModelRecord, ModelRole, RoutingDecision, RoutingEvent, Target,
+        ToolCallRow,
     },
     ids,
 };
@@ -168,6 +169,73 @@ impl Database {
         self.run(move |c| {
             let changed = c
                 .execute("DELETE FROM endpoint_profiles WHERE id = ?1", params![id])?;
+            Ok(changed > 0)
+        })
+        .await
+    }
+
+    // -- model records (capability registry, §5.4) ---------------------------
+
+    pub async fn list_model_records(&self) -> Result<Vec<ModelRecord>, CmdError> {
+        self.run(|c| {
+            let mut stmt = c.prepare(
+                "SELECT endpoint_id, model, capabilities, context_tokens,
+                        role, vram_estimate_gb, verified_at
+                 FROM models ORDER BY endpoint_id, model",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok(ModelRecord {
+                    endpoint_id: r.get("endpoint_id")?,
+                    model: r.get("model")?,
+                    capabilities: serde_json::from_str(
+                        &r.get::<_, Option<String>>("capabilities")?.unwrap_or_default(),
+                    )
+                    .unwrap_or_default(),
+                    context_tokens: r.get("context_tokens")?,
+                    role: r.get("role")?,
+                    vram_estimate_gb: r.get("vram_estimate_gb")?,
+                    verified_at: r.get("verified_at")?,
+                })
+            })?;
+            rows.collect()
+        })
+        .await
+    }
+
+    pub async fn upsert_model_record(&self, record: ModelRecord) -> Result<(), CmdError> {
+        self.run(move |c| {
+            c.execute(
+                "INSERT INTO models (endpoint_id, model, capabilities, context_tokens,
+                                     role, vram_estimate_gb, verified_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(endpoint_id, model) DO UPDATE SET
+                   capabilities = ?3, context_tokens = ?4, role = ?5,
+                   vram_estimate_gb = ?6, verified_at = ?7",
+                params![
+                    record.endpoint_id,
+                    record.model,
+                    serde_json::to_string(&record.capabilities).ok(),
+                    record.context_tokens,
+                    record.role,
+                    record.vram_estimate_gb,
+                    record.verified_at,
+                ],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn delete_model_record(
+        &self,
+        endpoint_id: String,
+        model: String,
+    ) -> Result<bool, CmdError> {
+        self.run(move |c| {
+            let changed = c.execute(
+                "DELETE FROM models WHERE endpoint_id = ?1 AND model = ?2",
+                params![endpoint_id, model],
+            )?;
             Ok(changed > 0)
         })
         .await
@@ -1202,6 +1270,55 @@ mod tests {
 
         let listed = db.list_conversations().await.unwrap();
         assert_eq!(listed[0].digest.as_deref(), Some("task: migrate auth"));
+    }
+
+    /// Capability records (§5.4): upsert overwrites per (endpoint, model),
+    /// listing is ordered, delete reports whether anything was removed.
+    #[tokio::test]
+    async fn model_records_roundtrip() {
+        let (_dir, db) = temp_db().await;
+
+        let record = ModelRecord {
+            endpoint_id: "ep_local_ollama".into(),
+            model: "qwen2.5vl:7b".into(),
+            capabilities: vec!["vision".into(), "tools".into()],
+            context_tokens: Some(32768),
+            role: None,
+            vram_estimate_gb: Some(6.5),
+            verified_at: Some(1000),
+        };
+        db.upsert_model_record(record.clone()).await.unwrap();
+
+        let listed = db.list_model_records().await.unwrap();
+        assert_eq!(listed, vec![record.clone()]);
+
+        // Same key overwrites; empty capabilities serialize as a JSON array.
+        let mut updated = record.clone();
+        updated.capabilities = Vec::new();
+        updated.context_tokens = None;
+        updated.verified_at = Some(2000);
+        db.upsert_model_record(updated.clone()).await.unwrap();
+        let listed = db.list_model_records().await.unwrap();
+        assert_eq!(listed, vec![updated.clone()]);
+
+        // A second endpoint key coexists; delete only removes its own row.
+        db.upsert_model_record(ModelRecord {
+            endpoint_id: "ep_remote".into(),
+            model: "gpt-4o".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        assert_eq!(db.list_model_records().await.unwrap().len(), 2);
+        assert!(db
+            .delete_model_record("ep_remote".into(), "gpt-4o".into())
+            .await
+            .unwrap());
+        assert!(!db
+            .delete_model_record("ep_remote".into(), "gpt-4o".into())
+            .await
+            .unwrap());
+        assert_eq!(db.list_model_records().await.unwrap(), vec![updated]);
     }
 
     /// Endpoint profiles (§5.1): full-field round-trip through upsert/get,

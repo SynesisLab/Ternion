@@ -86,6 +86,7 @@ export const en = {
 
   "settings.tab.general": "General",
   "settings.tab.endpoints": "Endpoints",
+  "settings.tab.models": "Models",
   "settings.tab.triad": "Triad",
   "settings.tab.permissions": "Permissions",
 
@@ -105,6 +106,16 @@ export const en = {
   "settings.endpoints.test": "Test",
   "settings.endpoints.testing": "…",
   "settings.endpoints.models": "models",
+
+  // Capability registry (M3, §5.4)
+  "settings.models.title": "Capability registry — chips override discovery facts",
+  "settings.models.none": "No models discovered yet",
+  "settings.models.contextTokens": "ctx",
+  "settings.models.save": "Save",
+  "settings.models.clear": "Clear",
+  "settings.models.clearHint": "Drop the saved record; fall back to discovery facts",
+  "settings.models.redetect": "Re-detect",
+  "settings.models.redetectHint": "Re-probe capabilities and context length via /api/show",
   "settings.triad.enabled": "Enable Triad routing",
   "settings.triad.enabledHint":
     "Herald classifies each message and picks Scout or Titan.",

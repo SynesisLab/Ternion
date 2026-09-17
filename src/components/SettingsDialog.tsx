@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import {
   clearEndpointApiKey,
+  clearModelRecord,
   clearSessionPermissions,
   deleteEndpointProfile,
   getSetting,
@@ -9,14 +10,17 @@ import {
   listModels,
   listToolPermissions,
   saveEndpointProfile,
+  saveModelRecord,
   setEndpointApiKey,
   setSetting,
   setToolPermission,
   testEndpoint,
+  verifyModel,
   type EndpointProfile,
   type EndpointTestResult,
   type ToolPermissionRow,
 } from "../lib/ipc";
+import type { ModelInfo } from "../types/chat";
 import { settingsKeys } from "../lib/settingsKeys";
 import { t } from "../i18n";
 import { useChatStore } from "../store/chatStore";
@@ -35,7 +39,7 @@ const DEFAULT_HANDOFF_RECENT = "6";
 const DEFAULT_HERALD_TIMEOUT = "8000";
 
 type TestState = "idle" | "testing" | "ok" | "fail";
-type Tab = "general" | "endpoints" | "triad" | "permissions";
+type Tab = "general" | "endpoints" | "models" | "triad" | "permissions";
 
 export function SettingsDialog({
   open,
@@ -226,6 +230,9 @@ export function SettingsDialog({
             <TabButton active={tab === "endpoints"} onClick={() => setTab("endpoints")}>
               {t("settings.tab.endpoints")}
             </TabButton>
+            <TabButton active={tab === "models"} onClick={() => setTab("models")}>
+              {t("settings.tab.models")}
+            </TabButton>
             <TabButton active={tab === "triad"} onClick={() => setTab("triad")}>
               {t("settings.tab.triad")}
             </TabButton>
@@ -339,6 +346,8 @@ export function SettingsDialog({
               setProfiles(await listEndpointProfiles().catch(() => []));
             }}
           />
+        ) : tab === "models" ? (
+          <ModelsTab profiles={profiles} />
         ) : tab === "triad" ? (
           <div className="space-y-4">
             <label className="block">
@@ -842,6 +851,214 @@ function EndpointsTab({
       )}
     </div>
   );
+}
+
+/** Capability registry (§5.4): discovery facts + user records, grouped by
+ * endpoint. Chips toggle vision/tools/thinking, Save persists the record
+ * (verified by the act of editing), Re-detect re-probes via /api/show. */
+function ModelsTab({ profiles }: { profiles: EndpointProfile[] }) {
+  const [rows, setRows] = useState<ModelInfo[]>([]);
+  const [drafts, setDrafts] = useState<Record<string, ModelDraft>>({});
+  const [busy, setBusy] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    void reload();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const reload = async () => {
+    const list = await listModels().catch(() => []);
+    setRows(list);
+    setDrafts(Object.fromEntries(list.map((m) => [keyOf(m), draftOf(m)])));
+  };
+
+  const kindOf = (endpointId: string): string =>
+    profiles.find((p) => p.id === endpointId)?.kind ?? "ollama";
+
+  const save = async (m: ModelInfo) => {
+    const k = keyOf(m);
+    const draft = drafts[k];
+    if (!draft) return;
+    setBusy((s) => ({ ...s, [k]: "save" }));
+    await saveModelRecord({
+      endpointId: m.endpointId,
+      model: bareModel(m.id),
+      capabilities: draft.capabilities,
+      contextTokens: parseTokens(draft.contextTokens),
+    }).catch(() => {});
+    setBusy((s) => ({ ...s, [k]: "" }));
+    await reload();
+  };
+
+  const clear = async (m: ModelInfo) => {
+    const k = keyOf(m);
+    setBusy((s) => ({ ...s, [k]: "clear" }));
+    await clearModelRecord(m.endpointId, bareModel(m.id)).catch(() => {});
+    setBusy((s) => ({ ...s, [k]: "" }));
+    await reload();
+  };
+
+  const redetect = async (m: ModelInfo) => {
+    const k = keyOf(m);
+    setBusy((s) => ({ ...s, [k]: "verify" }));
+    await verifyModel(m.endpointId, bareModel(m.id)).catch(() => {});
+    setBusy((s) => ({ ...s, [k]: "" }));
+    await reload();
+  };
+
+  // Group in endpoint order (built-in first, then profiles).
+  const orderedEndpoints = [
+    ...profiles.map((p) => p.id),
+    ...rows.map((m) => m.endpointId),
+  ].filter((id, i, arr) => arr.indexOf(id) === i);
+
+  return (
+    <div className="space-y-3">
+      <div className="text-xs font-medium text-[color:var(--color-muted)]">
+        {t("settings.models.title")}
+      </div>
+
+      {rows.length === 0 && (
+        <div className="rounded-lg border border-[color:var(--color-edge)] px-3 py-4 text-center text-xs text-[color:var(--color-muted)]">
+          {t("settings.models.none")}
+        </div>
+      )}
+
+      <div className="divide-y divide-[color:var(--color-edge)] rounded-lg border border-[color:var(--color-edge)]">
+        {orderedEndpoints.map((endpointId) => {
+          const endpointRows = rows.filter((m) => m.endpointId === endpointId);
+          if (endpointRows.length === 0) return null;
+          const profile = profiles.find((p) => p.id === endpointId);
+          return (
+            <div key={endpointId} className="px-3 py-2.5">
+              <div className="mb-1.5 flex items-center gap-2 text-[11px] font-medium text-[color:var(--color-muted)]">
+                <span>{profile?.name ?? endpointId}</span>
+                {endpointId === "ep_local_ollama" && (
+                  <span className="rounded bg-[color:var(--color-bg)] px-1.5 py-0.5 text-[10px] text-[color:var(--color-accent-2)]">
+                    {t("settings.endpoints.builtin")}
+                  </span>
+                )}
+              </div>
+              <div className="space-y-1">
+                {endpointRows.map((m) => {
+                  const k = keyOf(m);
+                  const draft = drafts[k];
+                  return (
+                    <div
+                      key={m.id}
+                      className="flex flex-wrap items-center gap-2 rounded-lg border border-[color:var(--color-edge)] bg-[color:var(--color-bg)] px-2.5 py-1.5"
+                    >
+                      <span className="min-w-0 flex-1 truncate font-mono text-xs text-[color:var(--color-ink)]">
+                        {m.id}
+                      </span>
+                      {CAP_TAGS.map((tag) => {
+                        const on = draft?.capabilities.includes(tag) ?? false;
+                        return (
+                          <button
+                            key={tag}
+                            type="button"
+                            onClick={() =>
+                              setDrafts((s) => {
+                                const d = s[k] ?? draftOf(m);
+                                return {
+                                  ...s,
+                                  [k]: {
+                                    ...d,
+                                    capabilities: on
+                                      ? d.capabilities.filter((c) => c !== tag)
+                                      : [...d.capabilities, tag],
+                                  },
+                                };
+                              })
+                            }
+                            className={`rounded px-1.5 py-0.5 text-[10px] ${
+                              on
+                                ? "bg-[color:var(--color-accent)] text-white"
+                                : "border border-[color:var(--color-edge)] text-[color:var(--color-muted)] hover:border-[color:var(--color-accent)]"
+                            }`}
+                          >
+                            {tag}
+                          </button>
+                        );
+                      })}
+                      <input
+                        type="text"
+                        value={draft?.contextTokens ?? ""}
+                        onChange={(e) =>
+                          setDrafts((s) => ({
+                            ...s,
+                            [k]: { ...s[k], contextTokens: e.target.value },
+                          }))
+                        }
+                        placeholder={t("settings.models.contextTokens")}
+                        className="w-24 rounded border border-[color:var(--color-edge)] px-2 py-1 text-xs outline-none focus:border-[color:var(--color-accent)]"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => void save(m)}
+                        className="rounded-lg bg-[color:var(--color-accent)] px-2 py-1 text-[10px] font-medium text-white hover:opacity-90"
+                      >
+                        {busy[k] === "save" ? "…" : t("settings.models.save")}
+                      </button>
+                      {kindOf(endpointId) === "ollama" && (
+                        <button
+                          type="button"
+                          onClick={() => void redetect(m)}
+                          title={t("settings.models.redetectHint")}
+                          className="rounded-lg border border-[color:var(--color-edge)] px-2 py-1 text-[10px] text-[color:var(--color-muted)] hover:border-[color:var(--color-accent)] hover:text-[color:var(--color-ink)]"
+                        >
+                          {busy[k] === "verify" ? "…" : t("settings.models.redetect")}
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => void clear(m)}
+                        title={t("settings.models.clearHint")}
+                        className="rounded-lg border border-[color:var(--color-edge)] px-2 py-1 text-[10px] text-[color:var(--color-muted)] hover:text-[color:var(--color-danger)]"
+                      >
+                        {t("settings.models.clear")}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+const CAP_TAGS = ["vision", "tools", "thinking"] as const;
+
+interface ModelDraft {
+  capabilities: string[];
+  contextTokens: string;
+}
+
+function keyOf(m: ModelInfo): string {
+  return `${m.endpointId}|${m.id}`;
+}
+
+/** Draft keeps every tag (completion + custom) so Save never drops facts it
+ * didn't show a chip for. */
+function draftOf(m: ModelInfo): ModelDraft {
+  return {
+    capabilities: [...m.capabilities],
+    contextTokens: m.contextLength != null ? String(m.contextLength) : "",
+  };
+}
+
+/** "qwen2.5vl:7b@ep_remote" → "qwen2.5vl:7b" (records are keyed by bare name). */
+function bareModel(id: string): string {
+  const at = id.lastIndexOf("@");
+  return at === -1 ? id : id.slice(0, at);
+}
+
+function parseTokens(raw: string): number | null {
+  const n = Number.parseInt(raw.trim(), 10);
+  return Number.isFinite(n) && n > 0 ? n : null;
 }
 
 function RoleSelect({

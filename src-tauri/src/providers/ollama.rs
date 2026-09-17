@@ -238,6 +238,69 @@ pub(crate) fn parse_tags(value: &serde_json::Value) -> Result<Vec<ModelInfo>, St
 }
 
 // ---------------------------------------------------------------------------
+// /api/show (capability verify, design §5.4)
+// ---------------------------------------------------------------------------
+
+/// What /api/show knows about one model: capability tags and the true context
+/// length (buried in `model_info` as `<arch>.context_length`).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct ModelShow {
+    pub capabilities: Vec<String>,
+    pub context_length: Option<u32>,
+}
+
+/// POST {base}/api/show {"model": …} — used by the capability registry's
+/// verify action (M3.4). The adapter's own `chat` path doesn't need it.
+pub(crate) async fn show_model(
+    http: &reqwest::Client,
+    base_url: &str,
+    model: &str,
+) -> Result<ModelShow, String> {
+    let url = format!("{}/api/show", base_url.trim_end_matches('/'));
+    let resp = http
+        .post(&url)
+        .json(&serde_json::json!({ "model": model }))
+        .send()
+        .await
+        .map_err(|e| format!("api/show: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("api/show: HTTP {}", resp.status()));
+    }
+    let value: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("api/show body: {e}"))?;
+    parse_show(&value).map_err(|e| format!("api/show: {e}"))
+}
+
+pub(crate) fn parse_show(value: &serde_json::Value) -> Result<ModelShow, String> {
+    let capabilities = value
+        .get("capabilities")
+        .and_then(|c| c.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    // Any `<arch>.context_length` key counts (llama3, qwen2, …).
+    let context_length = value
+        .get("model_info")
+        .and_then(|mi| mi.as_object())
+        .and_then(|mi| {
+            mi.iter()
+                .filter(|(k, _)| k.ends_with(".context_length"))
+                .filter_map(|(_, v)| v.as_u64())
+                .max()
+        })
+        .and_then(|n| u32::try_from(n).ok());
+    Ok(ModelShow {
+        capabilities,
+        context_length,
+    })
+}
+
+// ---------------------------------------------------------------------------
 // /api/chat request body (pure, unit-tested)
 // ---------------------------------------------------------------------------
 
@@ -385,6 +448,29 @@ mod tests {
         assert_eq!(models[0].quantization_level.as_deref(), Some("Q4_K_M"));
         assert!(models[1].capabilities.is_empty());
         assert_eq!(models[1].context_length, None);
+    }
+
+    #[test]
+    fn parse_show_extracts_capabilities_and_context() {
+        let fixture = serde_json::json!({
+            "license": "...",
+            "modelfile": "...",
+            "capabilities": ["completion", "vision", "tools", "thinking"],
+            "model_info": {
+                "general.architecture": "qwen2.5vl",
+                "qwen2.5vl.context_length": 32768,
+                "qwen2.5vl.block_count": 28,
+                "qwen2.5vl.embedding_length": 3584
+            }
+        });
+        let show = parse_show(&fixture).unwrap();
+        assert_eq!(show.capabilities, vec!["completion", "vision", "tools", "thinking"]);
+        assert_eq!(show.context_length, Some(32768));
+
+        // Older servers: no capabilities key, no model_info — both default.
+        let bare = parse_show(&serde_json::json!({ "license": "x" })).unwrap();
+        assert!(bare.capabilities.is_empty());
+        assert_eq!(bare.context_length, None);
     }
 
     #[test]

@@ -26,6 +26,47 @@ export async function listModels(): Promise<ModelInfo[]> {
   return invoke<ModelInfo[]>("list_models");
 }
 
+/** Capability record for one (endpoint, model) — design §5.4/§8.2. */
+export interface ModelRecord {
+  endpointId: string;
+  /** Bare model name (no @endpoint suffix). */
+  model: string;
+  capabilities: string[];
+  contextTokens: number | null;
+  role: string | null;
+  vramEstimateGb: number | null;
+  verifiedAt: number | null;
+}
+
+export interface SaveModelRecordArgs {
+  endpointId: string;
+  model: string;
+  capabilities: string[];
+  contextTokens: number | null;
+}
+
+/** Save a capability record (verified by the act of editing, §5.4). */
+export async function saveModelRecord(
+  args: SaveModelRecordArgs,
+): Promise<ModelRecord> {
+  return invoke<ModelRecord>("save_model_record", { args });
+}
+
+export async function clearModelRecord(
+  endpointId: string,
+  model: string,
+): Promise<void> {
+  return invoke("clear_model_record", { endpointId, model });
+}
+
+/** Re-probe an Ollama model via /api/show and store the facts. */
+export async function verifyModel(
+  endpointId: string,
+  model: string,
+): Promise<ModelRecord> {
+  return invoke<ModelRecord>("verify_model", { endpointId, model });
+}
+
 // -- Chat streaming ---------------------------------------------------------
 
 export interface ChatSendArgs {
