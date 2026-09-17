@@ -764,7 +764,7 @@ async fn execute_tool_call(
         attachments: Some(state.attachments_dir.clone()),
     };
     let executed = tool.execute(args, &ctx).await;
-    let (result_text, is_error, mut images) = match executed {
+    let (result_text, is_error, images) = match executed {
         Ok(outcome) => match outcome {
             crate::tools::ToolOutcome::WithImages { text, images } => {
                 (text, false, images)

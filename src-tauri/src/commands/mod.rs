@@ -5,6 +5,7 @@
 //! `commands::<name>`, which is what `generate_handler!` requires.
 
 pub mod attachments;
+pub mod capture;
 pub mod chat;
 pub mod conversations;
 pub mod endpoints;
@@ -13,6 +14,7 @@ pub mod permissions;
 pub mod settings;
 
 pub use attachments::*;
+pub use capture::*;
 pub use chat::*;
 pub use conversations::*;
 pub use endpoints::*;

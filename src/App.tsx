@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { ApprovalDialog } from "./components/ApprovalDialog";
+import { CaptureOverlay } from "./components/CaptureOverlay";
 import { ChatHeader } from "./components/ChatHeader";
 import { Composer } from "./components/Composer";
 import { MessageList } from "./components/MessageList";
@@ -16,6 +18,15 @@ import { useChatStore } from "./store/chatStore";
 const EMPTY_SUGGESTIONS: string[] = [];
 
 export default function App() {
+  // §7.1: the capture overlay mounts the same bundle but renders only the
+  // drag-rect UI (label is fixed per window, so this is stable per mount).
+  if (getCurrentWindow().label === "capture") {
+    return <CaptureOverlay />;
+  }
+  return <MainApp />;
+}
+
+function MainApp() {
   const init = useChatStore((s) => s.init);
   const conversations = useChatStore((s) => s.conversations);
   const activeId = useChatStore((s) => s.activeId);

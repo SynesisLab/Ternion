@@ -22,7 +22,7 @@ pub struct ProcessedImage {
 /// re-encode as JPEG. Returns an error string for undecodable/mismatched
 /// data (callers map it to a user-visible message).
 pub fn process(raw: &[u8], max_edge: u32) -> Result<ProcessedImage, String> {
-    let reader = image::ImageReader::new(std::io::Cursor::new(raw))
+    let reader = image::ImageReader::new(Cursor::new(raw))
         .with_guessed_format()
         .map_err(|e| format!("image: {e}"))?;
     // Orientation lives on the decoder (EXIF), read before decode consumes it.

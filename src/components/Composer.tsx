@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 
 import { saveAttachment, saveAttachmentFile } from "../lib/ipc";
@@ -75,6 +76,17 @@ export function Composer({
       void unlisten.then((f) => f());
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // §7.1: a Win+Alt+S region capture arrives as an already-stored
+  // attachment row — add it straight to the pending chips.
+  useEffect(() => {
+    const unlisten = listen<Attachment>("ternion://capture-attached", (ev) => {
+      setPending((p) => [...p, ev.payload]);
+    });
+    return () => {
+      void unlisten.then((f) => f());
+    };
   }, []);
 
   async function addFiles(paths: string[]) {

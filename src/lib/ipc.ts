@@ -110,6 +110,17 @@ export function saveAttachmentFile(path: string): Promise<Attachment> {
   return invoke<Attachment>("save_attachment_file", { path });
 }
 
+/** §7.1 region capture: a screen rect (overlay-relative physical px) goes
+ * through the GDI capturer and IMG pipeline; resolves with the stored row. */
+export function captureRegion(args: {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}): Promise<Attachment> {
+  return invoke<Attachment>("capture_region", { args });
+}
+
 /** Router log drawer (§9.2): recent decisions, newest first. */
 export function listRoutingEvents(
   conversationId: string,
