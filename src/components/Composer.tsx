@@ -6,6 +6,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { saveAttachment, saveAttachmentFile } from "../lib/ipc";
 import { t } from "../i18n";
 import type { Attachment } from "../types/chat";
+import type { HandoffOffer } from "../lib/ipc";
 
 /** Only these file extensions are offered to the backend on drop/pick. */
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp)$/i;
@@ -32,6 +33,10 @@ export function Composer({
   onContinueTitan,
   visionGap = null,
   onFixVision,
+  handoff = null,
+  onAcceptHandoff,
+  onDismissHandoff,
+  onNeverHandoff,
 }: {
   onSend: (text: string, attachments: Attachment[]) => void;
   onStop: () => void;
@@ -49,6 +54,11 @@ export function Composer({
    * known alternative (warning only); a ref = one-click fix available. */
   visionGap?: string | null;
   onFixVision?: () => void;
+  /** §5.6: a provider came online — offered, never silent. */
+  handoff?: HandoffOffer | null;
+  onAcceptHandoff?: () => void;
+  onDismissHandoff?: () => void;
+  onNeverHandoff?: () => void;
 }) {
   const [text, setText] = useState("");
   const [pending, setPending] = useState<Attachment[]>([]);
@@ -147,6 +157,44 @@ export function Composer({
   return (
     <div className="border-t border-[color:var(--color-edge)] bg-[color:var(--color-bg)] px-6 py-4">
       <div className="mx-auto max-w-3xl">
+        {handoff != null && !streaming && onAcceptHandoff && (
+          <div className="mb-2 flex items-center gap-3 rounded-xl border border-[color:var(--color-accent-2)]/30 bg-[color:var(--color-accent-2)]/10 px-3 py-2 text-xs text-[color:var(--color-ink)]">
+            <span className="flex-1">
+              {t("chat.handoff.offer").replace("{name}", handoff.name)}{" "}
+              <span className="font-mono">
+                {handoff.models[0]}@{handoff.endpointId}
+              </span>
+              {!handoff.local && (
+                <span className="block text-[11px] text-[color:var(--color-warn)]">
+                  {t("chat.handoff.cost")}
+                </span>
+              )}
+            </span>
+            <button
+              type="button"
+              onClick={onAcceptHandoff}
+              className="shrink-0 rounded-lg bg-[color:var(--color-accent)] px-3 py-1.5 font-medium text-white hover:opacity-90"
+            >
+              {t("chat.handoff.switch")}
+            </button>
+            <button
+              type="button"
+              onClick={onDismissHandoff}
+              className="shrink-0 rounded-lg border border-[color:var(--color-edge)] px-3 py-1.5 font-medium text-[color:var(--color-ink)] hover:border-[color:var(--color-accent)]"
+            >
+              {t("chat.handoff.keep")}
+            </button>
+            {onNeverHandoff && (
+              <button
+                type="button"
+                onClick={onNeverHandoff}
+                className="shrink-0 rounded-lg border border-[color:var(--color-edge)] px-3 py-1.5 text-[color:var(--color-muted)] hover:text-[color:var(--color-ink)]"
+              >
+                {t("chat.handoff.never")}
+              </button>
+            )}
+          </div>
+        )}
         {escalation && !streaming && onContinueTitan && (
           <div className="mb-2 flex items-center gap-3 rounded-xl border border-[color:var(--color-accent)]/30 bg-[color:var(--color-accent)]/10 px-3 py-2 text-xs text-[color:var(--color-ink)]">
             <span className="flex-1">{t("chat.escalation.offer")}</span>

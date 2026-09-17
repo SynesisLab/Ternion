@@ -14,6 +14,7 @@ import { Sidebar } from "./components/Sidebar";
 import { useChatStore } from "./store/chatStore";
 import { useApplyStoredLocale, useI18n } from "./i18n";
 import { useApplyStoredTheme } from "./lib/theme";
+import type { HandoffOffer } from "./lib/ipc";
 
 // Stable empty fallback: a selector returning a fresh `[]` each call makes
 // zustand's strict equality see a change every store update → React
@@ -72,6 +73,11 @@ function MainApp() {
   const visionGap = useChatStore(
     (s) => (activeId ? (s.visionGap[activeId] ?? null) : null),
   );
+  const handoff = useChatStore((s) => s.handoff);
+  const offerHandoff = useChatStore((s) => s.offerHandoff);
+  const acceptHandoff = useChatStore((s) => s.acceptHandoff);
+  const dismissHandoff = useChatStore((s) => s.dismissHandoff);
+  const neverHandoff = useChatStore((s) => s.neverHandoff);
 
   useEffect(() => {
     void init();
@@ -100,6 +106,18 @@ function MainApp() {
       void unlisten.then((f) => f());
     };
   }, [selectConversation]);
+
+  // §5.6 provider hand-off: the watcher announces endpoints that came
+  // online; the store decides prompt vs auto-apply ("always" policy).
+  useEffect(() => {
+    const unlisten = listen<HandoffOffer>(
+      "ternion://handoff-available",
+      (ev) => offerHandoff(ev.payload),
+    );
+    return () => {
+      void unlisten.then((f) => f());
+    };
+  }, [offerHandoff]);
 
   const active = conversations.find((c) => c.id === activeId);
 
@@ -147,6 +165,10 @@ function MainApp() {
           onFixVision={() => {
             if (visionGap) setPin(visionGap);
           }}
+          handoff={handoff}
+          onAcceptHandoff={acceptHandoff}
+          onDismissHandoff={dismissHandoff}
+          onNeverHandoff={neverHandoff}
         />
       </div>
       <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />

@@ -21,10 +21,12 @@ import {
   sendChat,
   setConversationWorkspaces,
   setConversationModel,
+  setHandoffPolicy,
   stopChat,
   takeSuggestions,
   respondApproval as apiRespondApproval,
   type ApprovalReply,
+  type HandoffOffer,
 } from "../lib/ipc";
 import { t } from "../i18n";
 import { newId } from "../lib/uuid";
@@ -77,6 +79,15 @@ export function isRolePin(pin: string): boolean {
   return pin === "auto" || pin === "scout" || pin === "titan";
 }
 
+/** Apply a §5.6 hand-off: pin the current chat to the offered endpoint's
+ * first model — a qualified ref, so the next turn routes there and the
+ * §3.6 hand-off machinery (digest + recent turns) carries the thread. */
+function applyHandoff(offer: HandoffOffer) {
+  const model = offer.models[0];
+  if (!model) return;
+  useChatStore.getState().setModel(`${model}@${offer.endpointId}`);
+}
+
 interface ChatStore {
   // data
   conversations: Conversation[];
@@ -104,6 +115,8 @@ interface ChatStore {
   visionGap: Record<string, string | null>;
   /** Mutating tools awaiting a decision (§6.6), oldest first. */
   approvals: ApprovalRequestView[];
+  /** §5.6 pending provider hand-off offer (null once resolved). */
+  handoff: HandoffOffer | null;
 
   initError: string | null;
 
@@ -125,6 +138,13 @@ interface ChatStore {
   sendMessage: (text: string, attachments?: Attachment[]) => Promise<void>;
   /** Resolve a pending approval (§6.6): allow/deny, scope, optional edit. */
   respondApproval: (requestId: string, reply: ApprovalReply) => Promise<void>;
+  /** §5.6: a provider came online — surface (or auto-apply) the offer. */
+  offerHandoff: (offer: HandoffOffer) => void;
+  /** Accept the pending offer: pin the current chat to the new endpoint. */
+  acceptHandoff: () => void;
+  dismissHandoff: () => void;
+  /** "Never for this endpoint" (§5.6): persist the policy + dismiss. */
+  neverHandoff: () => void;
   /** ⚡ Continue with Titan (§3.6): pins titan, asks for the rest of the answer. */
   continueWithTitan: () => Promise<void>;
   stop: () => Promise<void>;
@@ -147,6 +167,7 @@ export const useChatStore = create<ChatStore>()((set, get) => ({
   suggestions: {},
   visionGap: {},
   approvals: [],
+  handoff: null,
 
   initError: null,
 
@@ -480,6 +501,39 @@ export const useChatStore = create<ChatStore>()((set, get) => ({
   async respondApproval(requestId, reply) {
     await apiRespondApproval(requestId, reply);
     set((s) => ({ approvals: s.approvals.filter((a) => a.id !== requestId) }));
+  },
+
+  offerHandoff(offer) {
+    // §5.6: "always" auto-applies — but never mid-stream; while streaming
+    // the offer defers to the user (routing stays observable).
+    const { activeId, streaming } = get();
+    if (
+      offer.policy === "always" &&
+      !(activeId && streaming[activeId])
+    ) {
+      applyHandoff(offer);
+      return;
+    }
+    set({ handoff: offer });
+  },
+
+  acceptHandoff() {
+    const { handoff } = get();
+    if (!handoff) return;
+    applyHandoff(handoff);
+    set({ handoff: null });
+  },
+
+  dismissHandoff() {
+    set({ handoff: null });
+  },
+
+  neverHandoff() {
+    const { handoff } = get();
+    if (handoff) {
+      setHandoffPolicy(handoff.endpointId, "never").catch(() => {});
+    }
+    set({ handoff: null });
   },
 
   async stop() {

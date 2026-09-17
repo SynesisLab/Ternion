@@ -3,6 +3,7 @@ mod chat;
 mod commands;
 mod db;
 mod error;
+mod handoff;
 mod ids;
 mod img;
 mod mcp;
@@ -78,6 +79,7 @@ pub fn run() {
             commands::save_endpoint_profile,
             commands::delete_endpoint_profile,
             commands::set_endpoint_api_key,
+            commands::set_handoff_policy,
             commands::clear_endpoint_api_key,
             commands::test_endpoint,
             commands::list_mcp_servers,
@@ -156,6 +158,10 @@ pub fn run() {
             ));
 
             tray::setup(app)?;
+
+            // §5.6 provider hand-off: probe endpoints on a timer, offer the
+            // switch prompt when one comes online.
+            handoff::spawn(app.handle().clone());
 
             // §7.1/§9.3 quick capture hotkeys (hotkeys get a settings screen
             // in M4; v1 is fixed): `Win+Alt+S` opens the drag-region overlay,

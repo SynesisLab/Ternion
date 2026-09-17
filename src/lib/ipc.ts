@@ -360,3 +360,28 @@ export function deleteOwuiTool(id: string): Promise<void> {
 export function testOwuiTool(source: string): Promise<OwuiTestResult> {
   return invoke<OwuiTestResult>("test_owui_tool", { source });
 }
+
+// -- §5.6 provider hand-off ---------------------------------------------------
+
+/** Backend event payload (`ternion://handoff-available`) when an endpoint
+ * transitions from down to available. */
+export interface HandoffOffer {
+  endpointId: string;
+  name: string;
+  /** "ollama" | "openai" — non-local kinds show a cost note. */
+  kind: string;
+  local: boolean;
+  latencyMs: number;
+  modelCount: number;
+  /** First model ids; the switch targets the first. */
+  models: string[];
+  /** Persisted policy: "ask" | "always" (auto-apply) | "never". */
+  policy: string;
+}
+
+export function setHandoffPolicy(
+  endpointId: string,
+  policy: string,
+): Promise<void> {
+  return invoke("set_handoff_policy", { endpointId, policy });
+}

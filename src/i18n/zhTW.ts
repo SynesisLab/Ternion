@@ -90,6 +90,11 @@ export const zhTW: Record<I18nKey, string> = {
   "chat.escalation.continue": "⚡ 以 Titan 接續",
   "chat.escalation.continuePrompt":
     "請從上次中斷處接續先前的回答。",
+  "chat.handoff.offer": "{name} 已上線 — 要將此對話切換過去嗎？",
+  "chat.handoff.switch": "立即切換",
+  "chat.handoff.keep": "保留目前",
+  "chat.handoff.never": "此端點不再詢問",
+  "chat.handoff.cost": "此端點非本機 — 呼叫可能產生費用。",
   "chat.suggestions.label": "接著試試",
 
   "routerlog.title": "路由紀錄",

@@ -183,6 +183,27 @@ pub async fn test_endpoint(
     }
 }
 
+/// §5.6 hand-off policy for an endpoint: "ask" (prompt on arrival, the
+/// default), "always" (auto-apply in the UI), or "never" (suppress the
+/// prompt). Persisted as the `handoff.<endpoint_id>` setting.
+#[tauri::command]
+pub async fn set_handoff_policy(
+    state: State<'_, AppState>,
+    endpoint_id: String,
+    policy: String,
+) -> Result<(), CmdError> {
+    if !matches!(policy.as_str(), "ask" | "always" | "never") {
+        return Err(CmdError::new(
+            "invalid_policy",
+            "policy must be ask, always, or never",
+        ));
+    }
+    let key = crate::handoff::policy_key(endpoint_id.trim());
+    state.db.set_setting(&key, &policy).await?;
+    state.settings.set(&key, policy);
+    Ok(())
+}
+
 fn validate(profile: &EndpointProfile) -> Result<(), CmdError> {
     if profile.name.trim().is_empty() {
         return Err(CmdError::new("invalid_profile", "Name is required"));

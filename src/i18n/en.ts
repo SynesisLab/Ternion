@@ -84,6 +84,11 @@ export const en = {
   "chat.escalation.continue": "⚡ Continue with Titan",
   "chat.escalation.continuePrompt":
     "Please continue your previous answer from where it stopped.",
+  "chat.handoff.offer": "{name} is available — switch this chat to it?",
+  "chat.handoff.switch": "Switch now",
+  "chat.handoff.keep": "Keep current",
+  "chat.handoff.never": "Never for this endpoint",
+  "chat.handoff.cost": "This endpoint is not local — calls may incur cost.",
   "chat.suggestions.label": "Try next",
 
   "routerlog.title": "Router log",
