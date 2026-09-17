@@ -3,6 +3,13 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "description": "One interface. Three models. The right model for every message.",
+  "license": "MIT",
+  "author": "SynesisLab",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/SynesisLab/Ternion.git"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",

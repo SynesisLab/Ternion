@@ -2,6 +2,9 @@
 name = "ternion"
 version = "0.1.0"
 description = "One interface. Three models. The right model for every message."
+license = "MIT"
+repository = "https://github.com/SynesisLab/Ternion"
+authors = ["SynesisLab"]
 edition = "2024"
 
 [lib]
