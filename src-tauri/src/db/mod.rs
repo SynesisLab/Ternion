@@ -259,6 +259,38 @@ impl Database {
         .await
     }
 
+    /// One record, for targeted lookups (compression budget, capability facts).
+    pub async fn get_model_record(
+        &self,
+        endpoint_id: String,
+        model: String,
+    ) -> Result<Option<ModelRecord>, CmdError> {
+        self.run(move |c| {
+            let mut stmt = c.prepare(
+                "SELECT endpoint_id, model, capabilities, context_tokens,
+                        role, vram_estimate_gb, verified_at
+                 FROM models WHERE endpoint_id = ?1 AND model = ?2",
+            )?;
+            let mut rows = stmt.query(params![endpoint_id, model])?;
+            match rows.next()? {
+                Some(r) => Ok(Some(ModelRecord {
+                    endpoint_id: r.get("endpoint_id")?,
+                    model: r.get("model")?,
+                    capabilities: serde_json::from_str(
+                        &r.get::<_, Option<String>>("capabilities")?.unwrap_or_default(),
+                    )
+                    .unwrap_or_default(),
+                    context_tokens: r.get("context_tokens")?,
+                    role: r.get("role")?,
+                    vram_estimate_gb: r.get("vram_estimate_gb")?,
+                    verified_at: r.get("verified_at")?,
+                })),
+                None => Ok(None),
+            }
+        })
+        .await
+    }
+
     pub async fn upsert_model_record(&self, record: ModelRecord) -> Result<(), CmdError> {
         self.run(move |c| {
             c.execute(
@@ -1013,6 +1045,54 @@ impl Database {
         })
         .await
         .map(|opt| opt.flatten())
+    }
+
+    // -- context compression (§6.5c) -----------------------------------------
+
+    /// The stored progressive summary: (summary text, last message id it
+    /// covers). None when unset or unusable.
+    pub async fn get_conversation_compression(
+        &self,
+        id: String,
+    ) -> Result<Option<(String, String)>, CmdError> {
+        self.run(move |c| {
+            c.query_row(
+                "SELECT compression_summary, compression_upto FROM conversations WHERE id = ?1",
+                params![id],
+                |r| {
+                    let summary: Option<String> = r.get(0)?;
+                    let upto: Option<String> = r.get(1)?;
+                    Ok(match (summary, upto) {
+                        (Some(s), Some(u)) if !s.trim().is_empty() && !u.trim().is_empty() => {
+                            Some((s, u))
+                        }
+                        _ => None,
+                    })
+                },
+            )
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other),
+            })
+        })
+        .await
+    }
+
+    pub async fn set_conversation_compression(
+        &self,
+        id: String,
+        summary: String,
+        upto: String,
+    ) -> Result<(), CmdError> {
+        self.run(move |c| {
+            c.execute(
+                "UPDATE conversations SET compression_summary = ?2, compression_upto = ?3
+                 WHERE id = ?1",
+                params![id, summary, upto],
+            )
+            .map(|_| ())
+        })
+        .await
     }
 
     /// Herald sidecar re-title (overwrites the truncation fallback).

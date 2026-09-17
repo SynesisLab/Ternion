@@ -3,6 +3,7 @@
 //! can't. Everything here is plain Rust over settings + DB state, so the
 //! policy engine and parser are unit-testable without a running model.
 
+pub mod compress;
 pub mod config;
 pub mod herald;
 pub mod policy;

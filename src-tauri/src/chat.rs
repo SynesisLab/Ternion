@@ -15,8 +15,9 @@ use crate::{
     commands::chat::ChatSendArgs,
     error::CmdError,
     ids,
-    providers::Provider,
+    providers::{EndpointKind, Provider},
     router::{
+        compress,
         config::{Pin, TriadConfig},
         herald, policy, sidecars,
     },
@@ -279,21 +280,10 @@ async fn stream_once(
     } else {
         &history
     };
-    for msg in history_slice {
-        if msg.id == message_id || msg.status == MessageStatus::Streaming {
-            continue; // placeholder(s) — crashed stubs were swept to 'error' at startup
-        }
-        messages.push(ChatMessage {
-            id: msg.id.clone(),
-            role: msg.role,
-            content: ChatContent::Parts(msg.content.clone()),
-            tool_calls: None,
-            tool_call_id: None,
-            tool_name: None,
-        });
-    }
 
-    // 7. Params from settings; keep-alive follows the role.
+    // 7. Params from settings; keep-alive follows the role. Read before the
+    //    final assembly — the §6.5c compression budget needs num_ctx and the
+    //    serialized tool-schema size.
     let temperature: f32 = state
         .settings
         .get_or(crate::settings::keys::CHAT_TEMPERATURE, "0.7")
@@ -309,13 +299,6 @@ async fn stream_once(
         .get_or(crate::settings::keys::TOOLS_MAX_HOPS, "12")
         .parse()
         .unwrap_or(12);
-
-    // 8. Tool loop (§6.1): the model emits tool_call → validate → execute →
-    //    `<tool_result>` message appended → it continues, up to `max_hops`,
-    //    then a forced no-tools summary. With no workspace bound the model
-    //    has zero FS access (§6.3) — the bundled `tools` array stays empty,
-    //    M0 behavior. The shell tool additionally requires its opt-in
-    //    setting (§6.2). MCP servers (§6.5) merge regardless of workspaces.
     let shell_enabled = state
         .settings
         .get_or(crate::settings::keys::TOOLS_SHELL_ENABLED, "false")
@@ -330,7 +313,109 @@ async fn stream_once(
             .filter(|s| s.name != "shell" || shell_enabled)
             .collect::<Vec<_>>()
     };
+    // MCP servers (§6.5) merge regardless of workspaces.
     tool_specs.extend(state.mcp.enabled_specs(&state.db).await);
+
+    // 6.5 Context compression (§6.5c): when the assembled context approaches
+    //    the routed model's window, the older prefix is summarized —
+    //    progressively, folding in the previously stored summary — and only
+    //    the recent tail stays verbatim. Skipped on handoff turns (the slice
+    //    is already the recent tail, and the digest covers the rest).
+    //    Best-effort: a failed summary degrades to a plain omission note.
+    let mut split: Option<(usize, Option<String>)> = None;
+    if !switching
+        && compress::estimate_history_tokens(history_slice) > compress::MIN_CHECK_TOKENS
+    {
+        let (_, bare) = crate::providers::parse_model_ref(&routed.model);
+        let record_tokens = state
+            .db
+            .get_model_record(routed.endpoint_id.clone(), bare)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|r| r.context_tokens);
+        let local = state
+            .provider_for(&routed.endpoint_id)
+            .map(|p| p.kind() == EndpointKind::Ollama)
+            .unwrap_or(true);
+        let tool_tokens = (serde_json::to_string(&tool_specs)
+            .map(|s| s.len())
+            .unwrap_or(0)
+            / compress::CHARS_PER_TOKEN) as u32;
+        let head_tokens: u32 = messages
+            .iter()
+            .filter_map(|m| match &m.content {
+                ChatContent::Text(t) => Some(compress::estimate_text_tokens(t)),
+                _ => None,
+            })
+            .sum::<usize>() as u32;
+        let window = compress::effective_window(record_tokens, num_ctx, local);
+        let budget = window
+            .saturating_sub(compress::reserve_tokens(window))
+            .saturating_sub(
+                tool_tokens
+                    .saturating_add(head_tokens)
+                    .saturating_add(compress::SYSTEM_HEADROOM_TOKENS),
+            );
+        let split_plan = compress::plan(history_slice, budget as usize);
+        if split_plan.keep_from > 0 {
+            let summary = compress::compress_prefix(
+                state,
+                &conv_id,
+                cfg.roles.herald.as_deref(),
+                &routed.model,
+                &cfg.herald_keep_alive,
+                cfg.herald_timeout_ms.max(compress::COMPRESSION_TIMEOUT_MS),
+                &history_slice[..split_plan.keep_from],
+                cancel,
+            )
+            .await;
+            split = Some((split_plan.keep_from, summary));
+        }
+    }
+    match &split {
+        Some((_, Some(s))) => messages.push(ChatMessage {
+            id: ids::new_id(),
+            role: ChatRole::System,
+            content: ChatContent::Text(format!(
+                "CONTEXT SUMMARY — older turns were summarized to fit the context \
+                 window. Task state, decisions, and facts from before:\n{s}\n\n\
+                 The messages that follow are the recent verbatim tail."
+            )),
+            tool_calls: None,
+            tool_call_id: None,
+            tool_name: None,
+        }),
+        Some((_, None)) => messages.push(ChatMessage {
+            id: ids::new_id(),
+            role: ChatRole::System,
+            content: ChatContent::Text(
+                "Earlier conversation was omitted to fit the context window; \
+                 only the recent messages follow."
+                    .into(),
+            ),
+            tool_calls: None,
+            tool_call_id: None,
+            tool_name: None,
+        }),
+        None => {}
+    }
+    for (i, msg) in history_slice.iter().enumerate() {
+        if msg.id == message_id || msg.status == MessageStatus::Streaming {
+            continue; // placeholder(s) — crashed stubs were swept to 'error' at startup
+        }
+        if matches!(&split, Some((keep_from, _)) if i < *keep_from) {
+            continue; // summarized away (§6.5c)
+        }
+        messages.push(to_chat_message(msg));
+    }
+
+    // 8. Tool loop (§6.1): the model emits tool_call → validate → execute →
+    //    `<tool_result>` message appended → it continues, up to `max_hops`,
+    //    then a forced no-tools summary. With no workspace bound the model
+    //    has zero FS access (§6.3) — the bundled `tools` array stays empty,
+    //    M0 behavior. The shell tool additionally requires its opt-in
+    //    setting (§6.2). MCP servers (§6.5) merge regardless of workspaces.
     let mut all_text = String::new();
     let mut all_reasoning = String::new();
     let mut usage_total = (0u64, 0u64, 0u64);
@@ -2347,6 +2432,171 @@ mod tests {
         let msgs = messages(&state).await;
         let answer = msgs.last().unwrap();
         assert_eq!(answer.model_id.as_deref(), Some("scout-model"));
+    }
+
+    // -- §6.5c context compression -------------------------------------------
+
+    #[tokio::test]
+    async fn long_history_compresses_against_the_model_window() {
+        let provider = FakeProvider::scripted_sequence(vec![
+            // Call 0: the compression summarizer (no Herald assigned — the
+            // routed model itself summarizes).
+            vec![
+                StreamEvent::TextDelta {
+                    text: "prior work: migrated the session store".into(),
+                },
+                StreamEvent::Done,
+            ],
+            // Call 1: the main turn.
+            main_stream("done", 5),
+        ]);
+        let received = provider.received.clone();
+        let (_dir, state) = app_with(provider);
+        create_conv(&state).await;
+
+        // A routed model with a small verified window (§5.4 record).
+        state
+            .db
+            .upsert_model_record(crate::types::ModelRecord {
+                endpoint_id: "ep_local_ollama".into(),
+                model: "bigmodel".into(),
+                capabilities: Vec::new(),
+                context_tokens: Some(2000),
+                role: None,
+                vram_estimate_gb: None,
+                verified_at: None,
+            })
+            .await
+            .unwrap();
+
+        // Older history that dwarfs the 2k window (~1.5k tokens per row).
+        for i in 0..4 {
+            state
+                .db
+                .insert_user_message(
+                    format!("u{i}"),
+                    "c1".into(),
+                    vec![ContentPart::Text {
+                        text: format!("old fact {i}: {}", "x".repeat(6000)),
+                    }],
+                    1000 + i,
+                )
+                .await
+                .unwrap();
+            state
+                .db
+                .insert_assistant_placeholder(
+                    format!("a{i}"),
+                    "c1".into(),
+                    "bigmodel@ep_local_ollama".into(),
+                    "ep_local_ollama".into(),
+                    1100 + i,
+                )
+                .await
+                .unwrap();
+            state
+                .db
+                .update_assistant_message(
+                    format!("a{i}"),
+                    vec![ContentPart::Text {
+                        text: format!("old answer {i}: {}", "y".repeat(6000)),
+                    }],
+                    None,
+                    MessageStatus::Complete,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+
+        let mut a = args_with_id("um_now", "hello now");
+        a.model = "bigmodel@ep_local_ollama".into();
+        chat_send_inner(&state, a).await.unwrap();
+
+        let reqs = received.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        assert!(reqs.len() >= 2, "summarizer + main expected: {}", reqs.len());
+
+        // Call 0 is the summarizer over the older prefix.
+        let sum_text = reqs[0]
+            .messages
+            .iter()
+            .filter_map(|m| match &m.content {
+                ChatContent::Text(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(reqs[0].model, "bigmodel");
+        assert!(sum_text.contains("Compress"), "{sum_text}");
+        assert!(sum_text.contains("old fact 0"), "{sum_text}");
+        assert!(
+            !sum_text.contains("hello now"),
+            "the current turn is never summarized: {sum_text}"
+        );
+
+        // Call 1 is the main turn: summary system message, recent tail only.
+        let main = &reqs[1];
+        let sys = system_text_of(main);
+        assert!(sys.contains("CONTEXT SUMMARY"), "{sys}");
+        assert!(
+            sys.contains("prior work: migrated the session store"),
+            "summarizer output injected: {sys}"
+        );
+        for m in &main.messages {
+            let text = match &m.content {
+                ChatContent::Text(t) => t.clone(),
+                ChatContent::Parts(parts) => parts
+                    .iter()
+                    .filter_map(|p| match p {
+                        ContentPart::Text { text } => Some(text.clone()),
+                        _ => None,
+                    })
+                    .collect::<String>(),
+            };
+            assert!(
+                !text.contains("old fact"),
+                "older history summarized away: {text}"
+            );
+        }
+        assert!(
+            main.messages.iter().any(|m| match &m.content {
+                ChatContent::Parts(parts) => parts.iter().any(|p| matches!(
+                    p,
+                    ContentPart::Text { text } if text == "hello now"
+                )),
+                _ => false,
+            }),
+            "the current user turn stays verbatim"
+        );
+
+        // The progressive fold point is stored for the next pass.
+        let (stored, upto) = state
+            .db
+            .get_conversation_compression("c1".into())
+            .await
+            .unwrap()
+            .expect("stored compression");
+        assert_eq!(stored, "prior work: migrated the session store");
+        assert_eq!(upto, "a2", "the summary covers the summarized prefix");
+    }
+
+    #[tokio::test]
+    async fn small_history_skips_compression() {
+        let provider = FakeProvider::scripted(main_stream("done", 3));
+        let received = provider.received.clone();
+        let (_dir, state) = app_with(provider);
+        create_conv(&state).await;
+
+        chat_send_inner(&state, args("hello")).await.unwrap();
+
+        let reqs = received.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        assert!(reqs.len() >= 1);
+        let sys = system_text_of(&reqs[0]);
+        assert!(!sys.contains("CONTEXT SUMMARY"), "{sys}");
+        assert!(!sys.contains("omitted to fit"), "{sys}");
     }
 
     // -- M1: sidecars --------------------------------------------------------
