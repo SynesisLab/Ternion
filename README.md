@@ -131,8 +131,28 @@ Herald / Scout / Titan routing).
   dormant until the signing keypair is generated (see
   [Packaging & updates](#packaging--updates-14-m4))
 
-The MCP client (stdio) from the original M3 scope remains on the post-v1
-backlog.
+**Post-v1 backlog (all done)** — the §6.5/§5.6 items that stayed on the
+backlog after M4:
+
+- **Light theme (§10)**: a token-swapped light palette following the system
+  mode, with a flash-free boot (theme applies before the first paint)
+- **MCP client (§6.5)**: local stdio servers configured in Settings; their
+  tools merge namespaced `mcp__<server>__<tool>` and gate like the shell —
+  ask per call, grantable per tool, session cache dropped on config change
+- **Context compression (§6.5c)**: when the assembled context approaches the
+  routed model's window, older history is progressively summarized (Herald
+  when assigned, else the routed model) into a stored summary that folds in
+  each pass; the recent tail stays verbatim and failures degrade to plain
+  truncation with a note — never blocking
+- **OpenWebUI tools (§6.5b)**: OpenWebUI "Tools" manifests (Python
+  `class Tools`) parse into JSON-schema specs, merge namespaced
+  `owui__<manifest>__<method>`, and execute through a local Python
+  interpreter via a generated shim — same §6.6 gate as MCP tools
+- **Provider hand-off prompt (§5.6)**: endpoints are probed on a timer; when
+  one comes online the UI offers the switch (Switch now · Keep current ·
+  Never for this endpoint, "Always" auto-applies) — local-only mode
+  suppresses non-local offers, cloud offers carry a cost note, and a switch
+  rides the §3.6 digest hand-off machinery
 
 ## Prerequisites
 
