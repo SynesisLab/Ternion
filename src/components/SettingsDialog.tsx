@@ -24,7 +24,7 @@ import {
 } from "../lib/ipc";
 import type { ModelInfo, TriadReport } from "../types/chat";
 import { settingsKeys } from "../lib/settingsKeys";
-import { t } from "../i18n";
+import { t, useI18n, type Locale } from "../i18n";
 import { useChatStore } from "../store/chatStore";
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:11434";
@@ -52,6 +52,7 @@ export function SettingsDialog({
 }) {
   const refreshModels = useChatStore((s) => s.refreshModels);
   const models = useChatStore((s) => s.models);
+  const setLocale = useI18n((s) => s.setLocale);
 
   // -- general --------------------------------------------------------------
   const [tab, setTab] = useState<Tab>("general");
@@ -62,6 +63,7 @@ export function SettingsDialog({
   const [closeToTray, setCloseToTray] = useState(true);
   const [localOnly, setLocalOnly] = useState(false);
   const [shellEnabled, setShellEnabled] = useState(false);
+  const [uiLocale, setUiLocale] = useState<Locale>("en");
   const [test, setTest] = useState<TestState>("idle");
   const [saved, setSaved] = useState(false);
 
@@ -98,15 +100,17 @@ export function SettingsDialog({
       .then(setProfiles)
       .catch(() => setProfiles([]));
     void (async () => {
-      const [url, temp, ctx, ka, tray, shell, privacy] = await Promise.all([
-        getSetting(settingsKeys.ollamaBaseUrl),
-        getSetting(settingsKeys.chatTemperature),
-        getSetting(settingsKeys.chatContextTokens),
-        getSetting(settingsKeys.chatKeepAlive),
-        getSetting(settingsKeys.appCloseToTray),
-        getSetting(settingsKeys.toolsShellEnabled),
-        getSetting(settingsKeys.privacyLocalOnly),
-      ]);
+      const [url, temp, ctx, ka, tray, shell, privacy, savedLocale] =
+        await Promise.all([
+          getSetting(settingsKeys.ollamaBaseUrl),
+          getSetting(settingsKeys.chatTemperature),
+          getSetting(settingsKeys.chatContextTokens),
+          getSetting(settingsKeys.chatKeepAlive),
+          getSetting(settingsKeys.appCloseToTray),
+          getSetting(settingsKeys.toolsShellEnabled),
+          getSetting(settingsKeys.privacyLocalOnly),
+          getSetting(settingsKeys.uiLocale),
+        ]);
       setBaseUrl(url ?? DEFAULT_BASE_URL);
       setTemperature(temp ?? DEFAULT_TEMPERATURE);
       setContextTokens(ctx ?? DEFAULT_CONTEXT_TOKENS);
@@ -114,6 +118,7 @@ export function SettingsDialog({
       setCloseToTray((tray ?? "true") !== "false");
       setShellEnabled(shell === "true");
       setLocalOnly(privacy === "true");
+      setUiLocale(savedLocale === "zh-TW" ? "zh-TW" : "en");
 
       const k = settingsKeys;
       const triad = await Promise.all([
@@ -159,6 +164,7 @@ export function SettingsDialog({
     setCloseToTray(true);
     setLocalOnly(false);
     setShellEnabled(false);
+    setUiLocale("en");
     setTriadEnabled(true);
     setSkipRouter(false);
     setRoleHerald("");
@@ -198,6 +204,7 @@ export function SettingsDialog({
       setSetting(k.chatKeepAlive, keepAlive.trim() || DEFAULT_KEEP_ALIVE),
       setSetting(k.appCloseToTray, String(closeToTray)),
       setSetting(k.privacyLocalOnly, String(localOnly)),
+      setSetting(k.uiLocale, uiLocale),
       setSetting(k.toolsShellEnabled, String(shellEnabled)),
       setSetting(k.triadEnabled, String(triadEnabled)),
       setSetting(k.triadSkipRouter, String(skipRouter)),
@@ -221,6 +228,9 @@ export function SettingsDialog({
       setSetting(k.triadAdaptiveEnabled, String(adaptiveEnabled)),
     ];
     await Promise.all(writes).catch(() => {});
+    // §9.5: apply the language with the save — a change re-keys the app
+    // tree (same-value sets are no-ops in the store, so no remount churn).
+    setLocale(uiLocale);
     await refreshModels();
     setSaved(true);
     window.setTimeout(() => setSaved(false), 1500);
@@ -349,6 +359,20 @@ export function SettingsDialog({
               <span className="mt-1 block pl-6 text-xs text-[color:var(--color-muted)]">
                 {t("settings.privacy.localOnlyHint")}
               </span>
+            </label>
+
+            {/* Language (§9.5) — saved with the dialog; the tree re-keys and
+                re-translates when it applies. */}
+            <label className="flex items-center gap-3 text-sm text-[color:var(--color-ink)]">
+              <span>{t("settings.language")}</span>
+              <select
+                value={uiLocale}
+                onChange={(e) => setUiLocale(e.target.value as Locale)}
+                className="rounded-lg border border-[color:var(--color-edge)] bg-[color:var(--color-panel)] px-2 py-1.5 text-sm text-[color:var(--color-ink)] outline-none focus:border-[color:var(--color-accent)]"
+              >
+                <option value="en">English</option>
+                <option value="zh-TW">繁體中文</option>
+              </select>
             </label>
 
             {/* Shell tool opt-in (§6.2) */}

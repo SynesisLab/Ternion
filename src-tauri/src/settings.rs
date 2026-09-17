@@ -12,6 +12,8 @@ pub mod keys {
     pub const CHAT_KEEP_ALIVE: &str = "chat.keep_alive";
     pub const APP_CLOSE_TO_TRAY: &str = "app.close_to_tray";
     pub const UI_THEME: &str = "ui.theme";
+    /// §9.5: UI language — "en" (default) or "zh-TW".
+    pub const UI_LOCALE: &str = "ui.locale";
 
     // Privacy (§3.10): local-only mode suppresses cloud endpoints app-wide.
     pub const PRIVACY_LOCAL_ONLY: &str = "privacy.local_only";

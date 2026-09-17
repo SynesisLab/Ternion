@@ -12,6 +12,7 @@ import { RouterLog } from "./components/RouterLog";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { Sidebar } from "./components/Sidebar";
 import { useChatStore } from "./store/chatStore";
+import { useApplyStoredLocale, useI18n } from "./i18n";
 
 // Stable empty fallback: a selector returning a fresh `[]` each call makes
 // zustand's strict equality see a change every store update → React
@@ -34,6 +35,7 @@ export default function App() {
 
 function MainApp() {
   const init = useChatStore((s) => s.init);
+  const locale = useI18n((s) => s.locale);
   const conversations = useChatStore((s) => s.conversations);
   const activeId = useChatStore((s) => s.activeId);
   const selectConversation = useChatStore((s) => s.selectConversation);
@@ -70,6 +72,9 @@ function MainApp() {
     void init();
   }, [init]);
 
+  // §9.5: the persisted language applies before anything else paints.
+  useApplyStoredLocale();
+
   // Tray "New Chat" action (emitter lands in M0.10 with the tray itself).
   useEffect(() => {
     const unlisten = listen("ternion://new-chat", () => {
@@ -102,7 +107,10 @@ function MainApp() {
   }
 
   return (
-    <div className="flex h-screen bg-[color:var(--color-bg)] text-[color:var(--color-ink)]">
+    <div
+      key={locale}
+      className="flex h-screen bg-[color:var(--color-bg)] text-[color:var(--color-ink)]"
+    >
       <Sidebar />
       <div className="flex min-w-0 flex-1 flex-col">
         <ChatHeader

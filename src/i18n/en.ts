@@ -1,6 +1,7 @@
 /**
- * User-facing strings. M0 hard-codes English behind a typed accessor so the
- * M4 i18next swap is mechanical (add more dicts + a runtime locale).
+ * User-facing strings — the reference catalog (§9.5). English is the
+ * default; zh-TW (src/i18n/zhTW.ts) must cover every key (enforced by
+ * its Record<I18nKey, string> type). Add new keys here first.
  */
 
 export const en = {
@@ -199,6 +200,7 @@ export const en = {
   "settings.privacy.localOnly": "Local-only mode",
   "settings.privacy.localOnlyHint":
     "Disable cloud endpoints app-wide — routing falls back to local models only. Also in the tray menu.",
+  "settings.language": "Language",
   "settings.reset": "Reset defaults",
   "settings.saved": "Saved",
   "settings.close": "Cancel",

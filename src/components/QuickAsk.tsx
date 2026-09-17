@@ -11,7 +11,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { openInMain, saveAttachment, startCapture } from "../lib/ipc";
-import { t } from "../i18n";
+import { t, useApplyStoredLocale } from "../i18n";
 import { useChatStore } from "../store/chatStore";
 import type { Attachment, Message } from "../types/chat";
 
@@ -56,6 +56,9 @@ export function QuickAsk() {
   useEffect(() => {
     void init();
   }, [init]);
+
+  // §9.5: the palette speaks the persisted language too.
+  useApplyStoredLocale();
 
   // Esc dismisses the palette (it is a fire-and-forget surface; the exchange
   // lives on in the sidebar history).
