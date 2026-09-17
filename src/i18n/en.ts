@@ -201,6 +201,10 @@ export const en = {
   "settings.privacy.localOnlyHint":
     "Disable cloud endpoints app-wide — routing falls back to local models only. Also in the tray menu.",
   "settings.language": "Language",
+  "settings.theme": "Theme",
+  "settings.theme.dark": "Dark",
+  "settings.theme.light": "Light",
+  "settings.theme.system": "Follow system",
   "settings.reset": "Reset defaults",
   "settings.saved": "Saved",
   "settings.close": "Cancel",

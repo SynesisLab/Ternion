@@ -13,6 +13,7 @@ import { SettingsDialog } from "./components/SettingsDialog";
 import { Sidebar } from "./components/Sidebar";
 import { useChatStore } from "./store/chatStore";
 import { useApplyStoredLocale, useI18n } from "./i18n";
+import { useApplyStoredTheme } from "./lib/theme";
 
 // Stable empty fallback: a selector returning a fresh `[]` each call makes
 // zustand's strict equality see a change every store update → React
@@ -20,6 +21,10 @@ import { useApplyStoredLocale, useI18n } from "./i18n";
 const EMPTY_SUGGESTIONS: string[] = [];
 
 export default function App() {
+  // Appearance (§10): every window (main, quick, capture) applies the theme
+  // classes to documentElement; hooks stay above the label branches.
+  useApplyStoredTheme();
+
   // §7.1/§9.3: the capture overlay and quick-ask palette mount the same
   // bundle but render only their own UI (label is fixed per window, so this
   // is stable per mount).

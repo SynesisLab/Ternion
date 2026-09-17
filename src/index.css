@@ -23,6 +23,49 @@ body,
   height: 100%;
 }
 
+/* Light theme: the only thing a theme switch does is swap these variables —
+   every component reads them through Tailwind utilities. Code blocks stay
+   dark in both themes (the global github-dark hljs theme colors their
+   tokens), so --color-pre has no light override. */
+html.light {
+  color-scheme: light;
+  --color-bg: #f4f6fb;
+  --color-panel: #ffffff;
+  --color-panel-2: #eef1f7;
+  --color-edge: #d9dfec;
+  --color-ink: #1b2333;
+  --color-muted: #5d6879;
+  --color-accent: #6d4aff;
+  --color-accent-2: #0f766e;
+  --color-danger: #dc2626;
+  --color-warn: #b45309;
+}
+
+/* prose-invert sets its palette for the dark chrome; in light mode flip the
+   body/headings/etc. variables (the pre/in-code variables keep their dark
+   values on purpose — code blocks stay dark). */
+html.light .prose-invert {
+  --tw-prose-body: #2b3546;
+  --tw-prose-headings: #151b29;
+  --tw-prose-lead: #5d6879;
+  --tw-prose-links: #6d4aff;
+  --tw-prose-bold: #151b29;
+  --tw-prose-counters: #5d6879;
+  --tw-prose-bullets: #9aa4b5;
+  --tw-prose-hr: #d9dfec;
+  --tw-prose-quotes: #151b29;
+  --tw-prose-quote-borders: #d9dfec;
+  --tw-prose-captions: #5d6879;
+  --tw-prose-code: #b91c5c;
+  --tw-prose-th-borders: #d9dfec;
+  --tw-prose-td-borders: #d9dfec;
+}
+
+/* Native widgets (select popups, scrollbars) follow the theme too. */
+html {
+  color-scheme: dark;
+}
+
 body {
   background: var(--color-bg);
   color: var(--color-ink);

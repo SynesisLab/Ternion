@@ -198,6 +198,10 @@ export const zhTW: Record<I18nKey, string> = {
   "settings.privacy.localOnlyHint":
     "全域停用雲端端點 — 路由僅使用本機模型。亦可於系統匣選單切換。",
   "settings.language": "語言",
+  "settings.theme": "佈景主題",
+  "settings.theme.dark": "深色",
+  "settings.theme.light": "淺色",
+  "settings.theme.system": "跟隨系統",
   "settings.reset": "重設預設值",
   "settings.saved": "已儲存",
   "settings.close": "取消",

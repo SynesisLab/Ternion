@@ -25,6 +25,7 @@ import {
 import type { ModelInfo, TriadReport } from "../types/chat";
 import { settingsKeys } from "../lib/settingsKeys";
 import { t, useI18n, type Locale } from "../i18n";
+import { useTheme, type ThemeMode } from "../lib/theme";
 import { useChatStore } from "../store/chatStore";
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:11434";
@@ -53,6 +54,7 @@ export function SettingsDialog({
   const refreshModels = useChatStore((s) => s.refreshModels);
   const models = useChatStore((s) => s.models);
   const setLocale = useI18n((s) => s.setLocale);
+  const setMode = useTheme((s) => s.setMode);
 
   // -- general --------------------------------------------------------------
   const [tab, setTab] = useState<Tab>("general");
@@ -64,6 +66,7 @@ export function SettingsDialog({
   const [localOnly, setLocalOnly] = useState(false);
   const [shellEnabled, setShellEnabled] = useState(false);
   const [uiLocale, setUiLocale] = useState<Locale>("en");
+  const [uiTheme, setUiTheme] = useState<ThemeMode>("dark");
   const [test, setTest] = useState<TestState>("idle");
   const [saved, setSaved] = useState(false);
 
@@ -100,7 +103,7 @@ export function SettingsDialog({
       .then(setProfiles)
       .catch(() => setProfiles([]));
     void (async () => {
-      const [url, temp, ctx, ka, tray, shell, privacy, savedLocale] =
+      const [url, temp, ctx, ka, tray, shell, privacy, savedLocale, savedTheme] =
         await Promise.all([
           getSetting(settingsKeys.ollamaBaseUrl),
           getSetting(settingsKeys.chatTemperature),
@@ -110,6 +113,7 @@ export function SettingsDialog({
           getSetting(settingsKeys.toolsShellEnabled),
           getSetting(settingsKeys.privacyLocalOnly),
           getSetting(settingsKeys.uiLocale),
+          getSetting(settingsKeys.uiTheme),
         ]);
       setBaseUrl(url ?? DEFAULT_BASE_URL);
       setTemperature(temp ?? DEFAULT_TEMPERATURE);
@@ -119,6 +123,9 @@ export function SettingsDialog({
       setShellEnabled(shell === "true");
       setLocalOnly(privacy === "true");
       setUiLocale(savedLocale === "zh-TW" ? "zh-TW" : "en");
+      setUiTheme(
+        savedTheme === "light" || savedTheme === "system" ? savedTheme : "dark",
+      );
 
       const k = settingsKeys;
       const triad = await Promise.all([
@@ -165,6 +172,7 @@ export function SettingsDialog({
     setLocalOnly(false);
     setShellEnabled(false);
     setUiLocale("en");
+    setUiTheme("dark");
     setTriadEnabled(true);
     setSkipRouter(false);
     setRoleHerald("");
@@ -205,6 +213,7 @@ export function SettingsDialog({
       setSetting(k.appCloseToTray, String(closeToTray)),
       setSetting(k.privacyLocalOnly, String(localOnly)),
       setSetting(k.uiLocale, uiLocale),
+      setSetting(k.uiTheme, uiTheme),
       setSetting(k.toolsShellEnabled, String(shellEnabled)),
       setSetting(k.triadEnabled, String(triadEnabled)),
       setSetting(k.triadSkipRouter, String(skipRouter)),
@@ -231,6 +240,8 @@ export function SettingsDialog({
     // §9.5: apply the language with the save — a change re-keys the app
     // tree (same-value sets are no-ops in the store, so no remount churn).
     setLocale(uiLocale);
+    // Theme applies live through documentElement classes — no re-key needed.
+    setMode(uiTheme);
     await refreshModels();
     setSaved(true);
     window.setTimeout(() => setSaved(false), 1500);
@@ -359,6 +370,21 @@ export function SettingsDialog({
               <span className="mt-1 block pl-6 text-xs text-[color:var(--color-muted)]">
                 {t("settings.privacy.localOnlyHint")}
               </span>
+            </label>
+
+            {/* Appearance — theme applies live through the documentElement
+                classes on save (dark / light / follow the OS). */}
+            <label className="flex items-center gap-3 text-sm text-[color:var(--color-ink)]">
+              <span>{t("settings.theme")}</span>
+              <select
+                value={uiTheme}
+                onChange={(e) => setUiTheme(e.target.value as ThemeMode)}
+                className="rounded-lg border border-[color:var(--color-edge)] bg-[color:var(--color-panel)] px-2 py-1.5 text-sm text-[color:var(--color-ink)] outline-none focus:border-[color:var(--color-accent)]"
+              >
+                <option value="dark">{t("settings.theme.dark")}</option>
+                <option value="light">{t("settings.theme.light")}</option>
+                <option value="system">{t("settings.theme.system")}</option>
+              </select>
             </label>
 
             {/* Language (§9.5) — saved with the dialog; the tree re-keys and
