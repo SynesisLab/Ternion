@@ -4,6 +4,7 @@
 
 pub mod ndjson;
 pub mod ollama;
+pub mod openai;
 pub mod probe;
 pub mod secrets;
 #[cfg(test)]
@@ -24,8 +25,7 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EndpointKind {
     Ollama,
-    /// M3: OpenAI-compatible endpoints.
-    #[allow(dead_code)]
+    /// OpenAI-compatible endpoints (M3).
     OpenAiCompat,
 }
 
