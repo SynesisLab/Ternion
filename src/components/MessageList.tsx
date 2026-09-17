@@ -14,7 +14,13 @@ const PHASE_LABELS = {
 } as const;
 
 /** Live assistant panel driven by the stream draft (updates ~30 ms). */
-function LiveBubble({ draft }: { draft: StreamDraft }) {
+function LiveBubble({
+  draft,
+  waitingApproval,
+}: {
+  draft: StreamDraft;
+  waitingApproval: boolean;
+}) {
   const blank = draft.text.length === 0 && draft.reasoning.length === 0;
   return (
     <div className="max-w-[85%] space-y-2">
@@ -26,6 +32,12 @@ function LiveBubble({ draft }: { draft: StreamDraft }) {
       )}
       {draft.reasoning && <ThinkingBlock text={draft.reasoning} active />}
       {draft.tools.length > 0 && <ToolActivity calls={draft.tools} open />}
+      {waitingApproval && (
+        <div className="flex items-center gap-2 text-xs text-[color:var(--color-muted)]">
+          <span className="h-2 w-2 animate-pulse rounded-full bg-[color:var(--color-accent)]" />
+          {t("approval.waiting")}
+        </div>
+      )}
       {draft.text.length > 0 ? (
         <div className="prose prose-invert prose-sm max-w-none break-words text-[color:var(--color-ink)] prose-pre:bg-[#0d1017] prose-code:before:hidden prose-code:after:hidden">
           <Markdown text={draft.text} />
@@ -55,6 +67,12 @@ export function MessageList({ conversationId }: { conversationId: string }) {
   const messages = useChatStore((s) => s.messagesByConv[conversationId]);
   const draft = useChatStore((s) => s.drafts[conversationId]);
   const streaming = useChatStore((s) => s.streaming[conversationId] ?? false);
+  // Select the stable array; filter per-conversation in render (a selector
+  // that filters creates a fresh array per call → re-render loop).
+  const approvals = useChatStore((s) => s.approvals);
+  const waitingApproval = streaming
+    ? approvals.some((a) => a.conversationId === conversationId)
+    : false;
 
   const scrollKey = `${messages?.length ?? 0}:${draft?.text.length ?? 0}:${draft?.reasoning.length ?? 0}:${draft?.tools.length ?? 0}`;
   const ref = useAutoScroll<HTMLDivElement>(scrollKey);
@@ -85,7 +103,9 @@ export function MessageList({ conversationId }: { conversationId: string }) {
             />
           );
         })}
-        {streaming && draft && <LiveBubble draft={draft} />}
+        {streaming && draft && (
+          <LiveBubble draft={draft} waitingApproval={waitingApproval} />
+        )}
       </div>
     </div>
   );

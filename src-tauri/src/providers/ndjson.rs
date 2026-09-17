@@ -174,6 +174,7 @@ mod tests {
                 StreamEvent::ToolCallStart { .. } => "tool_call_start",
                 StreamEvent::ToolCallDelta { .. } => "tool_call_delta",
                 StreamEvent::ToolResult { .. } => "tool_result",
+                StreamEvent::ApprovalRequest { .. } => "approval_request",
                 StreamEvent::Usage { .. } => "usage",
                 StreamEvent::Error { .. } => "error",
                 StreamEvent::Done => "done",

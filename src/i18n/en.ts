@@ -34,6 +34,25 @@ export const en = {
   "workspace.maxThree": "A chat can bind at most 3 workspaces",
   "workspace.bound": "bound",
 
+  // Permission matrix / approval modal (M2.6, §6.6)
+  "approval.title": "Approval needed",
+  "approval.asking": "The model wants to:",
+  "approval.waiting": "Waiting for approval…",
+  "approval.diff": "Proposed change",
+  "approval.reject": "Reject",
+  "approval.edit": "Edit in place",
+  "approval.allowOnce": "Allow once",
+  "approval.allowSession": "Allow for session",
+  "approval.allowAlways": "Always for this folder",
+  "approval.deleteNote":
+    "The item is moved to the Recycle Bin — nothing is deleted permanently.",
+  "settings.permissions.title": "Tool permissions",
+  "settings.permissions.always": "Always",
+  "settings.permissions.reset": "Reset to ask",
+  "settings.permissions.session": "Session grants",
+  "settings.permissions.clearSession": "Clear session grants",
+  "settings.permissions.empty": "No remembered grants.",
+
   // Triad routing (M1)
   "chat.pin.auto": "Auto",
   "chat.pin.autoTitle": "Triad router picks the model per message",
@@ -64,6 +83,7 @@ export const en = {
 
   "settings.tab.general": "General",
   "settings.tab.triad": "Triad",
+  "settings.tab.permissions": "Permissions",
   "settings.triad.enabled": "Enable Triad routing",
   "settings.triad.enabledHint":
     "Herald classifies each message and picks Scout or Titan.",

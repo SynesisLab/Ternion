@@ -73,12 +73,13 @@ impl Default for ToolRegistry {
 }
 
 impl ToolRegistry {
-    /// The bundled tool set (design §6.2): the five auto-allowed FS reads.
-    /// Mutating tools register in M2.5 behind the §6.6 permission gate.
+    /// The bundled tool set (design §6.2): five auto-allowed FS reads plus
+    /// the six mutating FS tools, every one of which is gated by the §6.6
+    /// permission matrix before execution.
     pub fn bundled() -> Self {
-        Self {
-            tools: fs::bundled_read_tools(),
-        }
+        let mut tools = fs::bundled_read_tools();
+        tools.extend(fs::bundled_mutating_tools());
+        Self { tools }
     }
 
     pub fn register(&mut self, tool: Arc<dyn Tool>) {
@@ -312,9 +313,13 @@ mod tests {
     #[test]
     fn registry_specs_and_lookup() {
         let reg = ToolRegistry::bundled();
-        assert!(!reg.is_empty(), "M2.4: bundled reads are registered");
-        assert_eq!(reg.specs().len(), 5);
-        for name in ["fs_list", "fs_read", "fs_stat", "fs_search", "fs_tree"] {
+        assert!(!reg.is_empty());
+        // 5 auto-allowed reads (M2.4) + 6 gated mutators (M2.6).
+        assert_eq!(reg.specs().len(), 11);
+        for name in [
+            "fs_list", "fs_read", "fs_stat", "fs_search", "fs_tree", "fs_write", "fs_edit",
+            "fs_move", "fs_copy", "fs_delete", "fs_mkdir",
+        ] {
             assert!(reg.get(name).is_some(), "{name} registered");
         }
         assert!(reg.get("nope").is_none());

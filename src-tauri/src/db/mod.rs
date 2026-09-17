@@ -11,7 +11,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use rusqlite::{params, Connection, Row};
+use rusqlite::{params, Connection, OptionalExtension, Row};
 
 use crate::{
     error::CmdError,
@@ -190,6 +190,66 @@ impl Database {
                 params![id, now],
             )
             .map(|_| ())
+        })
+        .await
+    }
+
+    // -- Tool permission matrix (§6.6) ------------------------------------
+
+    /// Remembered "always" grants, newest first.
+    pub async fn list_tool_permissions(&self) -> Result<Vec<(String, String, String)>, CmdError> {
+        self.run(|c| {
+            let mut stmt =
+                c.prepare("SELECT tool, root, mode FROM tool_permissions ORDER BY tool, root")?;
+            let rows = stmt
+                .query_map([], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    /// Upsert an "always" grant, or remove the row when `mode` is "ask".
+    pub async fn set_tool_permission(
+        &self,
+        tool: String,
+        root: String,
+        mode: String,
+    ) -> Result<(), CmdError> {
+        self.run(move |c| {
+            if mode == "ask" {
+                c.execute(
+                    "DELETE FROM tool_permissions WHERE tool = ?1 AND root = ?2",
+                    params![tool, root],
+                )
+                .map(|_| ())
+            } else {
+                c.execute(
+                    "INSERT INTO tool_permissions (tool, root, mode) VALUES (?1, ?2, ?3)
+                     ON CONFLICT(tool, root) DO UPDATE SET mode = ?3",
+                    params![tool, root, mode],
+                )
+                .map(|_| ())
+            }
+        })
+        .await
+    }
+
+    /// The stored mode for one (tool × root), if any.
+    pub async fn tool_permission(
+        &self,
+        tool: String,
+        root: String,
+    ) -> Result<Option<String>, CmdError> {
+        self.run(move |c| {
+            let mut stmt =
+                c.prepare("SELECT mode FROM tool_permissions WHERE tool = ?1 AND root = ?2")?;
+            let mode = stmt
+                .query_row(params![tool, root], |r| r.get::<_, String>(0))
+                .optional()?;
+            Ok(mode)
         })
         .await
     }

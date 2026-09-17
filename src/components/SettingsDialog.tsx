@@ -1,6 +1,14 @@
 import { useEffect, useState } from "react";
 
-import { getSetting, listModels, setSetting } from "../lib/ipc";
+import {
+  clearSessionPermissions,
+  getSetting,
+  listModels,
+  listToolPermissions,
+  setSetting,
+  setToolPermission,
+  type ToolPermissionRow,
+} from "../lib/ipc";
 import { settingsKeys } from "../lib/settingsKeys";
 import { t } from "../i18n";
 import { useChatStore } from "../store/chatStore";
@@ -19,7 +27,7 @@ const DEFAULT_HANDOFF_RECENT = "6";
 const DEFAULT_HERALD_TIMEOUT = "8000";
 
 type TestState = "idle" | "testing" | "ok" | "fail";
-type Tab = "general" | "triad";
+type Tab = "general" | "triad" | "permissions";
 
 export function SettingsDialog({
   open,
@@ -58,8 +66,14 @@ export function SettingsDialog({
   const [sidecarTitles, setSidecarTitles] = useState(true);
   const [sidecarSuggestions, setSidecarSuggestions] = useState(true);
 
+  // -- permissions (§6.6) ---------------------------------------------------
+  const [grants, setGrants] = useState<ToolPermissionRow[]>([]);
+
   useEffect(() => {
     if (!open) return;
+    void listToolPermissions()
+      .then(setGrants)
+      .catch(() => setGrants([]));
     void (async () => {
       const [url, temp, ctx, ka, tray] = await Promise.all([
         getSetting(settingsKeys.ollamaBaseUrl),
@@ -193,6 +207,12 @@ export function SettingsDialog({
             <TabButton active={tab === "triad"} onClick={() => setTab("triad")}>
               {t("settings.tab.triad")}
             </TabButton>
+            <TabButton
+              active={tab === "permissions"}
+              onClick={() => setTab("permissions")}
+            >
+              {t("settings.tab.permissions")}
+            </TabButton>
           </div>
           <button
             type="button"
@@ -274,7 +294,7 @@ export function SettingsDialog({
               {t("settings.closeToTray")}
             </label>
           </div>
-        ) : (
+        ) : tab === "triad" ? (
           <div className="space-y-4">
             <label className="block">
               <span className="flex items-center gap-2 text-sm text-[color:var(--color-ink)]">
@@ -391,6 +411,64 @@ export function SettingsDialog({
                 {t("settings.triad.sidecarSuggestions")}
               </label>
             </div>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="text-xs font-medium text-[color:var(--color-muted)]">
+                {t("settings.permissions.title")}
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  void clearSessionPermissions();
+                }}
+                className="rounded-lg border border-[color:var(--color-edge)] px-2.5 py-1 text-xs text-[color:var(--color-ink)] hover:border-[color:var(--color-accent)]"
+              >
+                {t("settings.permissions.clearSession")}
+              </button>
+            </div>
+            {grants.length === 0 ? (
+              <div className="text-sm text-[color:var(--color-muted)]">
+                {t("settings.permissions.empty")}
+              </div>
+            ) : (
+              <div className="divide-y divide-[color:var(--color-edge)] rounded-lg border border-[color:var(--color-edge)]">
+                {grants.map((g) => (
+                  <div
+                    key={`${g.tool}:${g.root}`}
+                    className="flex items-center justify-between gap-3 px-3 py-2"
+                  >
+                    <div className="min-w-0">
+                      <div className="truncate text-sm text-[color:var(--color-ink)]">
+                        {g.tool}
+                      </div>
+                      <div className="truncate font-mono text-xs text-[color:var(--color-muted)]">
+                        {g.root}
+                      </div>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <span className="rounded bg-[color:var(--color-bg)] px-1.5 py-0.5 text-xs text-[color:var(--color-accent-2)]">
+                        {t("settings.permissions.always")}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void setToolPermission(g.tool, g.root, "ask").then(() =>
+                            listToolPermissions()
+                              .then(setGrants)
+                              .catch(() => {}),
+                          );
+                        }}
+                        className="rounded-lg border border-[color:var(--color-edge)] px-2.5 py-1 text-xs text-[color:var(--color-muted)] hover:text-[color:var(--color-ink)]"
+                      >
+                        {t("settings.permissions.reset")}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 

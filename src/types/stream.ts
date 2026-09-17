@@ -50,6 +50,19 @@ export type StreamEvent =
       content: string;
       isError: boolean | null;
     }
+  | {
+      type: "approval_request";
+      id: string;
+      callId: string;
+      tool: string;
+      path: string;
+      secondaryPath: string | null;
+      summary: string;
+      /** Unified diff for fs_write/fs_edit; null for the other tools. */
+      diff: string | null;
+      /** fs_write/fs_edit only: the full content that would land. */
+      resultContent: string | null;
+    }
   | { type: "usage"; tokensIn: number; tokensOut: number; latencyMs: number }
   | { type: "error"; code: string; message: string; retryable: boolean }
   | { type: "done" };

@@ -3,6 +3,7 @@ mod commands;
 mod db;
 mod error;
 mod ids;
+mod permissions;
 mod providers;
 mod router;
 mod settings;
@@ -56,6 +57,10 @@ pub fn run() {
             commands::list_models,
             commands::get_setting,
             commands::set_setting,
+            commands::respond_approval,
+            commands::list_tool_permissions,
+            commands::set_tool_permission,
+            commands::clear_session_permissions,
         ])
         .setup(|app| {
             use tauri::Manager;

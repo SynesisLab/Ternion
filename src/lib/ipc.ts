@@ -107,3 +107,42 @@ export function getSetting(key: string): Promise<string | null> {
 export function setSetting(key: string, value: string): Promise<void> {
   return invoke("set_setting", { key, value });
 }
+
+// -- Permission matrix (§6.6) ------------------------------------------------
+
+export interface ApprovalReply {
+  allow: boolean;
+  /** "" (allow once) | "session" | "always" — only read when allow. */
+  mode: string;
+  /** Edit-in-place: replacement content for fs_write/fs_edit. */
+  editedContent: string | null;
+}
+
+export interface ToolPermissionRow {
+  tool: string;
+  root: string;
+  mode: string;
+}
+
+export function respondApproval(
+  requestId: string,
+  reply: ApprovalReply,
+): Promise<void> {
+  return invoke("respond_approval", { requestId, reply });
+}
+
+export function listToolPermissions(): Promise<ToolPermissionRow[]> {
+  return invoke<ToolPermissionRow[]>("list_tool_permissions");
+}
+
+export function setToolPermission(
+  tool: string,
+  root: string,
+  mode: string,
+): Promise<void> {
+  return invoke("set_tool_permission", { tool, root, mode });
+}
+
+export function clearSessionPermissions(): Promise<void> {
+  return invoke("clear_session_permissions");
+}

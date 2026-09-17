@@ -20,9 +20,9 @@ use crate::{
     },
     state::{AppState, StreamEntry, DEFAULT_ENDPOINT},
     types::{
-        ChatContent, ChatMessage, ChatParams, ChatRequest, ChatRole, ChatSendResult, ContentPart,
-        DecisionSource, MessageStatus, Message as DbMessage, ModelRole, RoutingDecision,
-        StatusPhase, StreamEvent, Target,
+        ApprovalReply, ChatContent, ChatMessage, ChatParams, ChatRequest, ChatRole,
+        ChatSendResult, ContentPart, DecisionSource, MessageStatus, Message as DbMessage,
+        ModelRole, RoutingDecision, StatusPhase, StreamEvent, Target,
     },
 };
 
@@ -327,8 +327,15 @@ async fn stream_once(
 
         // Validate → execute → wrap → append, one result message per call.
         for call in &hop.calls {
-            let (result_text, is_error) =
-                execute_tool_call(state, message_id, call, &conv.workspace_roots).await?;
+            let (result_text, is_error) = execute_tool_call(
+                state,
+                message_id,
+                call,
+                &conv.workspace_roots,
+                &forward,
+                cancel,
+            )
+            .await?;
             let envelope = format!(
                 r#"<tool_result id="{}" source="untrusted">{result_text}</tool_result>"#,
                 call.id
@@ -504,11 +511,18 @@ async fn pump_stream(
 /// Validate → gate → execute one tool call, persisting the outcome row.
 /// Validation failures and unknown tools produce an `error` row fed back to
 /// the model; the loop always continues so it can correct course (§6.1).
+///
+/// §6.6 gate for mutating tools, in order: workspace path (the guard error
+/// surfaces from the tool itself), session grant → persisted row → default
+/// ask. An "ask" pauses the stream on an ApprovalRequest until the user
+/// replies (or the stream is cancelled — which denies, never aborts).
 async fn execute_tool_call(
     state: &AppState,
     message_id: &str,
     call: &crate::types::ToolCall,
     workspaces: &[String],
+    forward: &Arc<dyn Fn(&StreamEvent) + Send + Sync>,
+    cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<(String, bool), CmdError> {
     let row_id = ids::new_id();
     let now = ids::now_ms();
@@ -532,7 +546,7 @@ async fn execute_tool_call(
         return Ok((msg, true));
     };
 
-    let args: serde_json::Value = serde_json::from_str(&call.args)
+    let mut args: serde_json::Value = serde_json::from_str(&call.args)
         .unwrap_or(serde_json::Value::Null);
     if let Err(e) = crate::tools::validate_args(&tool.spec().input_schema, &args) {
         let msg = e.message();
@@ -564,8 +578,50 @@ async fn execute_tool_call(
         )
         .await?;
 
-    // §6.6 permission matrix arrives in M2.6; everything auto-runs until the
-    // fs tools (which mutate) exist. Recorded as "auto" in permission_mode.
+    // ---- §6.6 permission matrix ----------------------------------------
+    let mut permission_mode = "auto".to_string();
+    if crate::permissions::is_mutating(&call.name) {
+        // One guard resolution up front, shared by the payload and the
+        // edit-in-place rewrite (None when the target doesn't exist yet).
+        let path_key = crate::permissions::main_path_key(&call.name);
+        let raw = args
+            .get(path_key)
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let roots: Vec<std::path::PathBuf> =
+            workspaces.iter().map(std::path::PathBuf::from).collect();
+        let resolved = crate::tools::guard::resolve(&raw, &roots).ok().map(|r| r.path);
+
+        match resolve_policy(state, &call.name, &args, workspaces).await.as_str() {
+            "always" => permission_mode = "always".to_string(),
+            "session" => permission_mode = "session".to_string(),
+            _ => {
+                match request_approval(state, call, &args, workspaces, resolved.as_deref(), forward, cancel).await? {
+                    ApprovalDecision::Denied => {
+                        let msg = "user denied this operation".to_string();
+                        state
+                            .db
+                            .finish_tool_call(
+                                row_id.clone(),
+                                msg.clone(),
+                                "error".to_string(),
+                                Some("denied".into()),
+                            )
+                            .await?;
+                        return Ok((msg, true));
+                    }
+                    ApprovalDecision::Allowed { mode, edited } => {
+                        permission_mode = mode;
+                        if let Some(content) = edited {
+                            apply_edited_content(&call.name, &mut args, content, resolved.as_deref());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     let ctx = crate::tools::ToolExecCtx {
         workspaces: workspaces.to_vec(),
     };
@@ -583,9 +639,285 @@ async fn execute_tool_call(
     let status = if is_error { "error" } else { "ok" };
     state
         .db
-        .finish_tool_call(row_id, result_text.clone(), status.to_string(), Some("auto".into()))
+        .finish_tool_call(row_id, result_text.clone(), status.to_string(), Some(permission_mode))
         .await?;
     Ok((result_text, is_error))
+}
+
+/// Session grant → persisted "always" row → default ask.
+/// Returns "session" | "always" | "ask".
+async fn resolve_policy(
+    state: &AppState,
+    tool: &str,
+    args: &serde_json::Value,
+    workspaces: &[String],
+) -> String {
+    // The matrix keys on the root that contains the affected path. If the
+    // raw arg names no bound workspace the tool itself will fail the guard;
+    // the gate stays on the safe side (ask).
+    let path_key = crate::permissions::main_path_key(tool);
+    let raw = args
+        .get(path_key)
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    let Some(root) = matrix_root(workspaces, raw) else {
+        return "ask".to_string();
+    };
+
+    if state.session_grants.lock().await.contains(tool, &root) {
+        return "session".to_string();
+    }
+    if state
+        .db
+        .tool_permission(tool.to_string(), root.clone())
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|mode| mode == "always")
+    {
+        return "always".to_string();
+    }
+    "ask".to_string()
+}
+
+/// The workspace-root string that lexically contains `raw` — the matrix's
+/// key. Relative paths resolve to the first bound root (matches fs tools);
+/// absolute paths to the bound root that contains them; unresolvable → None.
+fn matrix_root<'a>(workspaces: &'a [String], raw: &str) -> Option<String> {
+    if raw.is_empty() {
+        return workspaces.first().cloned();
+    }
+    if std::path::Path::new(raw).is_absolute() {
+        let raw_lower = raw.to_lowercase();
+        workspaces
+            .iter()
+            .find(|w| {
+                let prefix = format!("{}\\", w.to_lowercase().trim_end_matches('\\'));
+                raw_lower.starts_with(&prefix)
+                    || raw_lower
+                        == w.to_lowercase().trim_end_matches('\\').to_string()
+            })
+            .cloned()
+    } else {
+        workspaces.first().cloned()
+    }
+}
+
+/// Outcome of parking an ApprovalRequest.
+enum ApprovalDecision {
+    Allowed { mode: String, edited: Option<String> },
+    Denied,
+}
+
+async fn request_approval(
+    state: &AppState,
+    call: &crate::types::ToolCall,
+    args: &serde_json::Value,
+    workspaces: &[String],
+    resolved: Option<&std::path::Path>,
+    forward: &Arc<dyn Fn(&StreamEvent) + Send + Sync>,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<ApprovalDecision, CmdError> {
+    let id = ids::new_id();
+    let tool = call.name.clone();
+    let path_key = crate::permissions::main_path_key(&tool);
+    let raw = args
+        .get(path_key)
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let raw_to = args
+        .get("to")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    // Display path: the canonical workspace path when it resolves, else the
+    // raw argument (not-yet-existing creation targets).
+    let display = resolved
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| raw.clone());
+
+    let (summary, diff, result_content) = build_approval_payload(&tool, args, &display);
+    forward(&StreamEvent::ApprovalRequest {
+        id: id.clone(),
+        call_id: call.id.clone(),
+        tool: tool.clone(),
+        path: display,
+        secondary_path: raw_to,
+        summary: summary.clone(),
+        diff,
+        result_content: result_content.clone(),
+    });
+
+    let (tx, rx) = tokio::sync::oneshot::channel::<ApprovalReply>();
+    state.approvals.lock().await.insert(id.clone(), tx);
+
+    // §6.6: the stream pauses (never cancelled) while pending. A stop on the
+    // conversation denies the pending request — the model sees a denial and
+    // the turn unwinds as cancelled, not aborted.
+    let reply = tokio::select! {
+        _ = cancel.cancelled() => {
+            state.approvals.lock().await.remove(&id);
+            ApprovalReply { allow: false, mode: String::new(), edited_content: None }
+        }
+        r = rx => {
+            r.unwrap_or(ApprovalReply { allow: false, mode: String::new(), edited_content: None })
+        }
+    };
+
+    if !reply.allow {
+        return Ok(ApprovalDecision::Denied);
+    }
+    let mode = match reply.mode.as_str() {
+        "session" => {
+            if let Some(root) = matrix_root(workspaces, &raw) {
+                state.session_grants.lock().await.grant(&tool, &root);
+            }
+            "session".to_string()
+        }
+        "always" => {
+            if let Some(root) = matrix_root(workspaces, &raw) {
+                state
+                    .db
+                    .set_tool_permission(tool.clone(), root, "always".to_string())
+                    .await?;
+            }
+            "always".to_string()
+        }
+        _ => "ask".to_string(),
+    };
+    Ok(ApprovalDecision::Allowed {
+        mode,
+        edited: reply.edited_content.filter(|s| !s.is_empty()),
+    })
+}
+
+/// Build the human summary + diff/content payload for a mutating tool.
+/// fs_write/fs_edit carry the resulting content (≤8 KB) so the modal can
+/// show and edit it; everything else summarizes.
+fn build_approval_payload(
+    tool: &str,
+    args: &serde_json::Value,
+    resolved_path: &str,
+) -> (String, Option<String>, Option<String>) {
+    const MAX_DIFF_CHARS: usize = 8_192;
+    let path = std::path::Path::new(resolved_path);
+    match tool {
+        "fs_write" => {
+            let content = args
+                .get("content")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let append = args
+                .get("mode")
+                .and_then(|v| v.as_str())
+                .is_some_and(|m| m == "append");
+            if append {
+                return (
+                    format!("appends {} bytes to {resolved_path}", content.len()),
+                    None,
+                    None,
+                );
+            }
+            let existing = std::fs::read_to_string(path).ok();
+            let summary = match &existing {
+                Some(old) => {
+                    format!("overwrites an existing file ({} bytes)", old.len())
+                }
+                None => format!("creates a new file ({} bytes)", content.len()),
+            };
+            let diff = existing.map(|old| {
+                let full = unified_diff(&old, content);
+                truncate_diff(&full, MAX_DIFF_CHARS)
+            });
+            (summary, diff, Some(content.to_string()))
+        }
+        "fs_edit" => {
+            let old_string = args
+                .get("old_string")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let new_string = args
+                .get("new_string")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let existing = std::fs::read_to_string(path).ok();
+            let summary = "replaces a snippet in an existing file".to_string();
+            let diff = existing.as_ref().map(|old| {
+                let after = old.replace(old_string, new_string);
+                let full = unified_diff(old, &after);
+                truncate_diff(&full, MAX_DIFF_CHARS)
+            });
+            let result_content = existing.map(|old| old.replace(old_string, new_string));
+            (summary, diff, result_content)
+        }
+        "fs_move" | "fs_copy" => {
+            let to = args.get("to").and_then(|v| v.as_str()).unwrap_or("?");
+            let verb = if tool == "fs_move" { "moves" } else { "copies" };
+            (format!("{verb} {resolved_path} → {to}"), None, None)
+        }
+        "fs_delete" => (
+            format!("moves {resolved_path} to the Recycle Bin"),
+            None,
+            None,
+        ),
+        "fs_mkdir" => (format!("creates directory {resolved_path}"), None, None),
+        _ => (format!("runs {tool}"), None, None),
+    }
+}
+
+fn unified_diff(before: &str, after: &str) -> String {
+    let diff = similar::TextDiff::from_lines(before, after);
+    let mut out = String::new();
+    for hunk in diff.unified_diff().context_radius(2).iter_hunks() {
+        out.push_str(&hunk.to_string());
+        out.push('\n');
+    }
+    out
+}
+
+fn truncate_diff(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        return s.to_string();
+    }
+    let cut: String = s.chars().take(max_chars).collect();
+    format!("{cut}\n[… diff truncated]")
+}
+
+/// Edit-in-place (§6.6): the modal's replacement content becomes the tool's
+/// own argument, so the executor stays the single code path. For fs_edit the
+/// replacement is the whole resulting file — expressed as old_string = the
+/// entire existing content, which matches exactly once.
+fn apply_edited_content(
+    tool: &str,
+    args: &mut serde_json::Value,
+    content: String,
+    resolved: Option<&std::path::Path>,
+) {
+    match tool {
+        "fs_write" => {
+            if let Some(obj) = args.as_object_mut() {
+                obj.insert("content".into(), serde_json::Value::String(content));
+            }
+        }
+        "fs_edit" => {
+            let Some(resolved) = resolved else {
+                return; // target didn't resolve — run the original edit
+            };
+            let Ok(existing) = std::fs::read_to_string(resolved) else {
+                return; // binary/unreadable — run the original edit
+            };
+            if existing.is_empty() {
+                return; // whole-file replacement impossible; the edit errors below
+            }
+            if let Some(obj) = args.as_object_mut() {
+                obj.insert("old_string".into(), serde_json::Value::String(existing));
+                obj.insert("new_string".into(), serde_json::Value::String(content));
+                obj.remove("expected_occurrences");
+            }
+        }
+        _ => {}
+    }
 }
 
 /// One turn's routing outcome: the resolved model + Triad role, the policy
@@ -1792,6 +2124,220 @@ mod tests {
             reqs[0].tools.is_none(),
             "no workspace bound ⇒ model has zero FS access (§6.3)"
         );
+    }
+
+    /// Bind a workspace root on c1 and keep the tempdir alive — for tests
+    /// that exercise tools against real files.
+    async fn bind_root_keep(state: &AppState, conv: &str) -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        state
+            .db
+            .set_conversation_workspaces(
+                conv.to_string(),
+                vec![root.path().display().to_string()],
+            )
+            .await
+            .unwrap();
+        root
+    }
+
+    /// Resolve the first pending approval from the "UI side", concurrently
+    /// with the awaiting send.
+    async fn respond_first(state: &AppState, reply: ApprovalReply) {
+        for _ in 0..400 {
+            let mut approvals = state.approvals.lock().await;
+            if let Some(id) = approvals.keys().next().cloned() {
+                let tx = approvals.remove(&id).unwrap();
+                let _ = tx.send(reply);
+                return;
+            }
+            drop(approvals);
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("no approval request appeared within 2s");
+    }
+
+    #[tokio::test]
+    async fn mutating_tool_denial_fed_back_without_execution() {
+        let provider = FakeProvider::scripted_sequence(vec![
+            tool_call_script("fs_write", r#"{"path":"new.txt","content":"hi"}"#, "writing"),
+            main_stream("acknowledged", 4),
+        ]);
+        let received = provider.received.clone();
+        let (_dir, state) = app_with(provider);
+        create_conv(&state).await;
+        let root = bind_root_keep(&state, "c1").await;
+
+        let collected = Arc::new(Mutex::new(Vec::new()));
+        let sink = collected.clone();
+        let forward = Arc::new(move |ev: &StreamEvent| {
+            sink.lock().unwrap_or_else(|p| p.into_inner()).push(ev.clone())
+        }) as Arc<dyn Fn(&StreamEvent) + Send + Sync>;
+        let deny = ApprovalReply { allow: false, mode: String::new(), edited_content: None };
+        let (result, ()) = tokio::join!(
+            send(&state, args("write it"), forward),
+            respond_first(&state, deny),
+        );
+        let result = result.unwrap();
+        assert_eq!(result.status, MessageStatus::Complete, "loop continues past a denial");
+
+        // An ApprovalRequest reached the UI with the payload.
+        let events = collected.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let req_event = events.iter().find_map(|ev| match ev {
+            StreamEvent::ApprovalRequest {
+                tool, path, result_content, ..
+            } => Some((tool.clone(), path.clone(), result_content.clone())),
+            _ => None,
+        })
+        .expect("approval request forwarded");
+        assert_eq!(req_event.0, "fs_write");
+        assert!(req_event.1.ends_with("new.txt"), "{}", req_event.1);
+        assert_eq!(req_event.2.as_deref(), Some("hi"));
+
+        // The model sees the denial; nothing was written.
+        let reqs = received.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let tool_msg = last_tool_message(&reqs[1]);
+        match &tool_msg.content {
+            ChatContent::Text(t) => assert!(t.contains("user denied this operation"), "{t}"),
+            _ => unreachable!(),
+        }
+        assert!(!root.path().join("new.txt").exists(), "denied write must not land");
+
+        // Persisted as a denied row.
+        let msgs = messages(&state).await;
+        let rows = state.db.list_tool_calls(msgs[1].id.clone()).await.unwrap();
+        assert_eq!(rows[0].status, "error");
+        assert_eq!(rows[0].permission_mode.as_deref(), Some("denied"));
+    }
+
+    #[tokio::test]
+    async fn session_grant_auto_allows_mutating_tool() {
+        let provider = FakeProvider::scripted_sequence(vec![
+            tool_call_script("fs_write", r#"{"path":"granted.txt","content":"v"}"#, "writing"),
+            main_stream("done", 2),
+        ]);
+        let (_dir, state) = app_with(provider);
+        create_conv(&state).await;
+        let root = bind_root_keep(&state, "c1").await;
+        state
+            .session_grants
+            .lock()
+            .await
+            .grant("fs_write", &root.path().display().to_string());
+
+        let result = chat_send_inner(&state, args("go")).await.unwrap();
+        assert_eq!(result.status, MessageStatus::Complete);
+
+        let msgs = messages(&state).await;
+        let rows = state.db.list_tool_calls(msgs[1].id.clone()).await.unwrap();
+        assert_eq!(rows[0].status, "ok");
+        assert_eq!(rows[0].permission_mode.as_deref(), Some("session"));
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("granted.txt")).unwrap(),
+            "v"
+        );
+    }
+
+    #[tokio::test]
+    async fn persisted_always_grant_auto_allows_mutating_tool() {
+        let provider = FakeProvider::scripted_sequence(vec![
+            tool_call_script("fs_write", r#"{"path":"always.txt","content":"v"}"#, "writing"),
+            main_stream("done", 2),
+        ]);
+        let (_dir, state) = app_with(provider);
+        create_conv(&state).await;
+        let root = bind_root_keep(&state, "c1").await;
+        state
+            .db
+            .set_tool_permission(
+                "fs_write".into(),
+                root.path().display().to_string(),
+                "always".into(),
+            )
+            .await
+            .unwrap();
+
+        let result = chat_send_inner(&state, args("go")).await.unwrap();
+        assert_eq!(result.status, MessageStatus::Complete);
+
+        let msgs = messages(&state).await;
+        let rows = state.db.list_tool_calls(msgs[1].id.clone()).await.unwrap();
+        assert_eq!(rows[0].status, "ok");
+        assert_eq!(rows[0].permission_mode.as_deref(), Some("always"));
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("always.txt")).unwrap(),
+            "v"
+        );
+    }
+
+    #[test]
+    fn matrix_root_lexical_containment() {
+        let ws = vec!["C:\\work".to_string()];
+        assert_eq!(matrix_root(&ws, r"C:\work\a.txt").as_deref(), Some("C:\\work"));
+        assert_eq!(matrix_root(&ws, r"c:\WORK\a.txt").as_deref(), Some("C:\\work"));
+        assert_eq!(matrix_root(&ws, "rel.txt").as_deref(), Some("C:\\work"));
+        assert_eq!(matrix_root(&ws, r"D:\other\a.txt"), None);
+    }
+
+    #[test]
+    fn approval_payload_write_variants() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("f.txt");
+        std::fs::write(&p, "one\ntwo\n").unwrap();
+
+        // Overwrite: diff shows the change, full content carried for editing.
+        let args = serde_json::json!({"path": p.display().to_string(), "content": "one\nTWO\n"});
+        let (summary, diff, content) =
+            build_approval_payload("fs_write", &args, &p.display().to_string());
+        assert!(summary.contains("overwrites"), "{summary}");
+        let diff = diff.expect("diff for overwrite");
+        assert!(diff.contains("-two"), "{diff}");
+        assert!(diff.contains("+TWO"), "{diff}");
+        assert_eq!(content.as_deref(), Some("one\nTWO\n"));
+
+        // Creation: no diff, summary names the file.
+        std::fs::remove_file(&p).unwrap();
+        let (summary, diff, content) =
+            build_approval_payload("fs_write", &args, &p.display().to_string());
+        assert!(summary.contains("creates a new file"), "{summary}");
+        assert!(diff.is_none());
+        assert_eq!(content.as_deref(), Some("one\nTWO\n"));
+
+        // Append: no diff, no content takeover.
+        let args = serde_json::json!({"path": p.display().to_string(), "content": "x", "mode": "append"});
+        let (summary, diff, content) =
+            build_approval_payload("fs_write", &args, &p.display().to_string());
+        assert!(summary.contains("appends"), "{summary}");
+        assert!(diff.is_none());
+        assert!(content.is_none());
+    }
+
+    #[test]
+    fn approval_payload_edit_replaces_all_occurrences() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("f.txt");
+        std::fs::write(&p, "a X b X c\n").unwrap();
+        let args = serde_json::json!({
+            "path": p.display().to_string(),
+            "old_string": "X",
+            "new_string": "Y"
+        });
+        let (summary, diff, content) =
+            build_approval_payload("fs_edit", &args, &p.display().to_string());
+        assert!(summary.contains("replaces"), "{summary}");
+        assert_eq!(content.as_deref(), Some("a Y b Y c\n"));
+        let diff = diff.expect("diff");
+        assert!(diff.contains("-a X b X c"), "{diff}");
+        assert!(diff.contains("+a Y b Y c"), "{diff}");
+    }
+
+    #[test]
+    fn approval_payload_delete_mentions_recycle_bin() {
+        let args = serde_json::json!({"path": "somewhere/old.txt"});
+        let (summary, diff, content) =
+            build_approval_payload("fs_delete", &args, "somewhere/old.txt");
+        assert!(summary.contains("Recycle Bin"), "{summary}");
+        assert!(diff.is_none() && content.is_none());
     }
 
     #[tokio::test]

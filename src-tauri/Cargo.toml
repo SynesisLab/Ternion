@@ -41,6 +41,9 @@ grep-regex = "0.1"
 # Recycle Bin deletes for fs_delete (§6.2: never permanent).
 trash = "5"
 
+# Unified diffs for the approval modal (§6.6).
+similar = "2"
+
 [dev-dependencies]
 tempfile = "3"
 

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 
+import { ApprovalDialog } from "./components/ApprovalDialog";
 import { ChatHeader } from "./components/ChatHeader";
 import { Composer } from "./components/Composer";
 import { MessageList } from "./components/MessageList";
@@ -100,6 +101,7 @@ export default function App() {
         />
       </div>
       <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <ApprovalDialog />
       <RouterLog
         open={routerLogOpen}
         conversationId={activeId}

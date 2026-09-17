@@ -6,6 +6,7 @@
 use futures::future::BoxFuture;
 
 use super::super::{Tool, ToolError, ToolExecCtx, ToolOutcome};
+#[cfg(test)]
 use super::resolve_arg;
 
 pub struct FsEdit;

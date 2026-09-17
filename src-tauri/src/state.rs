@@ -2,7 +2,9 @@
 
 use std::{collections::HashMap, sync::Arc, sync::RwLock};
 
-use crate::{db::Database, error::CmdError, providers::Provider, settings::SettingsCache};
+use tokio::sync::Mutex as AsyncMutex;
+
+use crate::{db::Database, error::CmdError, permissions, providers::Provider, settings::SettingsCache, types::ApprovalReply};
 
 /// The single endpoint id shipped in M0 (M3 adds user-managed profiles).
 pub const DEFAULT_ENDPOINT: &str = "ep_local_ollama";
@@ -23,6 +25,11 @@ pub struct AppState {
     pub suggestions: Arc<RwLock<HashMap<String, Vec<String>>>>,
     /// Bundled tool set (§6.1). Immutable after startup.
     pub tool_registry: crate::tools::ToolRegistry,
+    /// §6.6 pending approval requests, keyed by request id. The executor
+    /// parks its `oneshot` here; `respond_approval` resolves it.
+    pub approvals: AsyncMutex<HashMap<String, tokio::sync::oneshot::Sender<ApprovalReply>>>,
+    /// §6.6 "allow for session" grants — in-memory, lost on exit.
+    pub session_grants: AsyncMutex<permissions::SessionGrants>,
     providers: RwLock<HashMap<String, Arc<dyn Provider>>>,
 }
 
@@ -48,6 +55,8 @@ impl AppState {
             model_registry: RwLock::new(Vec::new()),
             suggestions: Arc::new(RwLock::new(HashMap::new())),
             tool_registry: crate::tools::ToolRegistry::bundled(),
+            approvals: AsyncMutex::new(HashMap::new()),
+            session_grants: AsyncMutex::new(permissions::SessionGrants::default()),
             providers: RwLock::new(providers),
         }
     }

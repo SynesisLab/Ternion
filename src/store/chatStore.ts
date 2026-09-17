@@ -19,14 +19,17 @@ import {
   listModels,
   renameConversation as apiRenameConversation,
   sendChat,
-  setConversationModel,
   setConversationWorkspaces,
+  setConversationModel,
   stopChat,
   takeSuggestions,
+  respondApproval as apiRespondApproval,
+  type ApprovalReply,
 } from "../lib/ipc";
 import { t } from "../i18n";
 import { newId } from "../lib/uuid";
 import type {
+  ApprovalRequestView,
   ConnectionStatus,
   Conversation,
   Message,
@@ -95,6 +98,8 @@ interface ChatStore {
   escalation: Record<string, boolean>;
   /** Follow-up chips from the Herald sidecar (§3.7), per conversation. */
   suggestions: Record<string, string[]>;
+  /** Mutating tools awaiting a decision (§6.6), oldest first. */
+  approvals: ApprovalRequestView[];
 
   initError: string | null;
 
@@ -114,6 +119,8 @@ interface ChatStore {
   /** Explicit model fallback (M0-style picker selection). */
   setModel: (modelId: string) => void;
   sendMessage: (text: string) => Promise<void>;
+  /** Resolve a pending approval (§6.6): allow/deny, scope, optional edit. */
+  respondApproval: (requestId: string, reply: ApprovalReply) => Promise<void>;
   /** ⚡ Continue with Titan (§3.6): pins titan, asks for the rest of the answer. */
   continueWithTitan: () => Promise<void>;
   stop: () => Promise<void>;
@@ -134,6 +141,7 @@ export const useChatStore = create<ChatStore>()((set, get) => ({
   streaming: {},
   escalation: {},
   suggestions: {},
+  approvals: [],
 
   initError: null,
 
@@ -448,6 +456,11 @@ export const useChatStore = create<ChatStore>()((set, get) => ({
     await get().sendMessage(t("chat.escalation.continuePrompt"));
   },
 
+  async respondApproval(requestId, reply) {
+    await apiRespondApproval(requestId, reply);
+    set((s) => ({ approvals: s.approvals.filter((a) => a.id !== requestId) }));
+  },
+
   async stop() {
     const { activeId, streaming } = get();
     if (!activeId || !streaming[activeId]) return;
@@ -589,6 +602,26 @@ export const useChatStore = create<ChatStore>()((set, get) => ({
             },
           };
         });
+        break;
+      }
+      case "approval_request": {
+        // §6.6: the stream pauses (never cancelled) while the modal is open.
+        set((s) => ({
+          approvals: [
+            ...s.approvals,
+            {
+              id: ev.id,
+              callId: ev.callId,
+              conversationId,
+              tool: ev.tool,
+              path: ev.path,
+              secondaryPath: ev.secondaryPath,
+              summary: ev.summary,
+              diff: ev.diff,
+              resultContent: ev.resultContent,
+            },
+          ],
+        }));
         break;
       }
       case "done":

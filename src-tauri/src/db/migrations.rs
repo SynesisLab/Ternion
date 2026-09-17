@@ -9,6 +9,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ("0002_add_reasoning", include_str!("migrations/0002_add_reasoning.sql")),
     ("0003_triad_settings", include_str!("migrations/0003_triad_settings.sql")),
     ("0004_tool_calls", include_str!("migrations/0004_tool_calls.sql")),
+    ("0005_tool_permissions", include_str!("migrations/0005_tool_permissions.sql")),
 ];
 
 pub fn run(conn: &Connection) -> rusqlite::Result<()> {

@@ -193,9 +193,40 @@ pub enum StreamEvent {
     ToolCallStart { index: u32, id: String, name: String },
     ToolCallDelta { index: u32, args_delta: String },
     ToolResult { call_id: String, content: String, is_error: Option<bool> },
+    /// §6.6: a mutating tool is waiting for the user. The stream pauses
+    /// (never cancelled) until `respond_approval` resolves this id.
+    ApprovalRequest {
+        id: String,
+        call_id: String,
+        tool: String,
+        /// Primary affected path (the `path`/`from` argument, resolved).
+        path: String,
+        /// Secondary path for fs_move/fs_copy (the `to` argument).
+        secondary_path: Option<String>,
+        /// One-line human summary, e.g. "overwrites an existing file (1.2 KB)".
+        summary: String,
+        /// Unified diff for fs_write/fs_edit; None for the other tools.
+        diff: Option<String>,
+        /// fs_write/fs_edit only: the full content that would land. Shown and
+        /// editable in the modal ("Edit in place" replaces the tool arg).
+        result_content: Option<String>,
+    },
     Usage { tokens_in: u64, tokens_out: u64, latency_ms: u64 },
     Error { code: String, message: String, retryable: bool },
     Done,
+}
+
+/// The user's decision on an ApprovalRequest (sent via `respond_approval`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApprovalReply {
+    pub allow: bool,
+    /// "" (allow once) | "session" | "always" — only read when allow.
+    #[serde(default)]
+    pub mode: String,
+    /// Edit-in-place: replacement content for fs_write/fs_edit.
+    #[serde(default)]
+    pub edited_content: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -369,6 +400,16 @@ mod tests {
             (StreamEvent::ToolCallStart { index: 0, id: "1".into(), name: "n".into() }, "tool_call_start"),
             (StreamEvent::ToolCallDelta { index: 0, args_delta: "a".into() }, "tool_call_delta"),
             (StreamEvent::ToolResult { call_id: "1".into(), content: "c".into(), is_error: None }, "tool_result"),
+            (StreamEvent::ApprovalRequest {
+                id: "ap1".into(),
+                call_id: "1".into(),
+                tool: "fs_write".into(),
+                path: r"C:\w\a.txt".into(),
+                secondary_path: None,
+                summary: "s".into(),
+                diff: None,
+                result_content: None,
+            }, "approval_request"),
             (StreamEvent::Usage { tokens_in: 1, tokens_out: 2, latency_ms: 3 }, "usage"),
             (StreamEvent::Error { code: "c".into(), message: "m".into(), retryable: true }, "error"),
             (StreamEvent::Done, "done"),
@@ -389,6 +430,19 @@ mod tests {
             index: 0, args_delta: "x".into(),
         }).unwrap();
         assert_eq!(delta["argsDelta"], "x");
+
+        let approval = serde_json::to_value(StreamEvent::ApprovalRequest {
+            id: "ap1".into(),
+            call_id: "1".into(),
+            tool: "fs_move".into(),
+            path: r"C:\w\a.txt".into(),
+            secondary_path: Some(r"C:\w\b.txt".into()),
+            summary: "moves a file".into(),
+            diff: None,
+            result_content: None,
+        }).unwrap();
+        assert_eq!(approval["callId"], "1");
+        assert_eq!(approval["secondaryPath"], r"C:\w\b.txt");
 
         let status = serde_json::to_value(StreamEvent::Status {
             phase: StatusPhase::Routing,

@@ -8,7 +8,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use super::{Tool, ToolError, ToolExecCtx, ToolOutcome};
+use super::{Tool, ToolError, ToolExecCtx};
+#[cfg(test)]
+use super::ToolOutcome;
 
 pub mod delete;
 pub mod edit;
@@ -33,9 +35,8 @@ pub fn bundled_read_tools() -> Vec<Arc<dyn Tool>> {
     ]
 }
 
-/// The bundled mutating tools (M2.5 executors). Registered in M2.6, where
-/// the §6.6 permission matrix gates every call before execution.
-#[allow(dead_code)]
+/// The bundled mutating tools (M2.5 executors). Every call passes the §6.6
+/// permission matrix in the orchestrator before execution.
 pub fn bundled_mutating_tools() -> Vec<Arc<dyn Tool>> {
     vec![
         Arc::new(write::FsWrite),
