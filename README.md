@@ -47,9 +47,12 @@ task, and Scout overruns offer a one-click "Continue with Titan".
   case-insensitive prefix checks); mutating tools go through an approval
   matrix (ask / allow-for-session / always-for-folder) with unified
   diffs; opt-in `shell` tool, every command approved
-- **Extensible tools** — local stdio MCP servers and OpenWebUI Python
-  tool manifests merge into the same namespaced, permission-gated tool
-  surface (`mcp__<server>__<tool>`, `owui__<manifest>__<method>`)
+- **Extensible tools** — local stdio MCP servers and **OpenWebUI Skills**
+  (the Python `class Tools` manifests, compatible with the format
+  OpenWebUI renamed from Tools to Skills) merge into the same
+  namespaced, permission-gated tool surface
+  (`mcp__<server>__<tool>`, `owui__<manifest>__<method>`). OpenWebUI
+  **Functions** (Filters / Pipes) are not supported yet — see Roadmap.
 - **Context compression** — when the routed model's window fills, older
   history is progressively summarized into a stored rolling summary;
   the recent tail stays verbatim and failures degrade to plain
@@ -157,8 +160,8 @@ design lives in [DESIGN.md](./DESIGN.md).
 ## Roadmap
 
 Deliberately out of scope for now: mid-stream provider failover retry,
-mDNS endpoint discovery, OpenWebUI Functions-as-middleware, and code
-signing for the installer.
+mDNS endpoint discovery, OpenWebUI Functions (Filters / Pipes) as
+middleware, and code signing for the installer.
 
 ## Releases & updates
 

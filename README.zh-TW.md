@@ -39,9 +39,11 @@ Scout 超出輸出上限時提供一鍵「以 Titan 接續」。
   檢查）；修改型工具走授權矩陣（詢問 / 本次工作階段允許 /
   此資料夾一律允許）並附統一 diff；選用開啟的 `shell` 工具，每道命令
   都需授權
-- **可擴充工具** — 本機 stdio MCP 伺服器與 OpenWebUI Python 工具資訊
-  清單，併入同一個以命名空間分隔、經權限閘門的工具介面
-  （`mcp__<伺服器>__<工具>`、`owui__<清單>__<方法>`）
+- **可擴充工具** — 本機 stdio MCP 伺服器與 **OpenWebUI Skills**（Python
+  `class Tools` 資訊清單，相容於 OpenWebUI 由 Tools 更名為 Skills 的
+  格式），併入同一個以命名空間分隔、經權限閘門的工具介面
+  （`mcp__<伺服器>__<工具>`、`owui__<清單>__<方法>`）。OpenWebUI
+  **Functions**（Filters / Pipes）尚未支援 — 見路線圖。
 - **上下文壓縮** — 當路由模型的視窗將滿，較舊歷史會漸進式摘要成一份
   持續併入的儲存摘要；近期結尾保持原文；失敗時降級為單純截斷，絕不
   阻塞
@@ -138,7 +140,7 @@ cargo test -- --ignored   # 針對執行中 Ollama 的即時探測
 ## 路線圖
 
 目前刻意不做：串流中的提供者失效重試、mDNS 端點探索、OpenWebUI
-Functions 即中介層、以及安裝程式的程式碼簽署。
+Functions（Filters / Pipes）作為中介層、以及安裝程式的程式碼簽署。
 
 ## 發佈與更新
 
