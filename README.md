@@ -11,7 +11,7 @@ It speaks native Ollama and any OpenAI-compatible endpoint. See
 [DESIGN.md](./DESIGN.md) for the full product design (the Triad system:
 Herald / Scout / Titan routing).
 
-## Status — M0–M3 complete (Triad router, tools, vision & multi-endpoint)
+## Status — M0–M4 complete (Triad router, tools, vision, polish)
 
 **Foundation (M0)**
 
@@ -104,9 +104,35 @@ Herald / Scout / Titan routing).
   under the cursor; the drag rect (Esc cancels) goes through the IMG
   pipeline and lands in the composer as a pending attachment chip
 
-Polish remains for M4 (Triad report, adaptive routing, zh-Hant i18n, updater,
-packaging); the MCP client (stdio) from the original M3 scope moved to the
-post-v1 backlog.
+**Polish (M4)** — DESIGN.md §3.11, §9.3, §9.5, §14:
+
+- **Triad report** (Settings → Triad): fleet-wide aggregates over every
+  routing event and completed turn — decision sources (Herald / heuristics /
+  hard rules / manual), escalation & de-escalation counts, overrides, average
+  Herald latency, per-role turns / latency / token spend, and a "time saved
+  vs always-Titan" estimate with the observed baseline it used
+- **Adaptive tuning** (opt-in): a pin that contradicts the conversation's
+  latest auto decision nudges that flag class's escalation threshold — the
+  learned bumps (with their override counts) show in the report and can be
+  reset
+- **Quick capture (Win+Alt+T)**: a frameless always-on-top palette at the
+  top-right of the screen; asks run through the full Triad pipeline into
+  real persisted conversations — routing ribbons, image paste, region
+  capture, and a one-click hand-off to the main window
+- **Local-only mode** (Settings → General, or the tray): a privacy toggle
+  that suppresses every cloud endpoint — cloud pins/roles fall back to the
+  best local model for the role, Herald is treated as down (heuristics
+  decide), vision upgrades never leave built-in Ollama, and when no local
+  model can serve, the turn fails loudly instead of silently leaking
+- **Traditional Chinese**: a complete zh-TW catalog with a Language setting
+  (model codenames stay English)
+- **Updater + packaging (§14)**: NSIS per-user installer
+  (English/繁體中文), and the tauri updater armed against GitHub Releases —
+  dormant until the signing keypair is generated (see
+  [Packaging & updates](#packaging--updates-14-m4))
+
+The MCP client (stdio) from the original M3 scope remains on the post-v1
+backlog.
 
 ## Prerequisites
 
