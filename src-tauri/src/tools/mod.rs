@@ -1,13 +1,13 @@
 //! Bundled tool runtime core (design §6): the registry the orchestrator
 //! loops over, the executor trait, and argument validation against each
-//! tool's own JSON schema. The `fs_*` tools (§6.2) register in M2.4/M2.5;
-//! until then the registry ships empty and no `tools` array reaches the
-//! provider, so tool-capable models behave exactly as before.
+//! tool's own JSON schema. Read tools (§6.2) register here in M2.4;
+//! mutating tools follow in M2.5 behind the §6.6 gate.
 
 use std::sync::Arc;
 
 use futures::future::BoxFuture;
 
+pub mod fs;
 pub mod guard;
 
 /// Execution context handed to tools: the conversation's canonical workspace
@@ -73,9 +73,12 @@ impl Default for ToolRegistry {
 }
 
 impl ToolRegistry {
-    /// The bundled tool set (design §6.2). Deliberately empty until M2.4/M2.5.
+    /// The bundled tool set (design §6.2): the five auto-allowed FS reads.
+    /// Mutating tools register in M2.5 behind the §6.6 permission gate.
     pub fn bundled() -> Self {
-        Self { tools: Vec::new() }
+        Self {
+            tools: fs::bundled_read_tools(),
+        }
     }
 
     pub fn register(&mut self, tool: Arc<dyn Tool>) {
@@ -308,12 +311,12 @@ mod tests {
 
     #[test]
     fn registry_specs_and_lookup() {
-        let mut reg = ToolRegistry::bundled();
-        assert!(reg.is_empty());
-        reg.register(Arc::new(testkit::EchoTool { result: String::new() }));
-        assert_eq!(reg.specs().len(), 1);
-        assert_eq!(reg.specs()[0].name, "echo");
-        assert!(reg.get("echo").is_some());
+        let reg = ToolRegistry::bundled();
+        assert!(!reg.is_empty(), "M2.4: bundled reads are registered");
+        assert_eq!(reg.specs().len(), 5);
+        for name in ["fs_list", "fs_read", "fs_stat", "fs_search", "fs_tree"] {
+            assert!(reg.get(name).is_some(), "{name} registered");
+        }
         assert!(reg.get("nope").is_none());
     }
 

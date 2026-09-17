@@ -234,9 +234,14 @@ async fn stream_once(
 
     // 8. Tool loop (§6.1): the model emits tool_call → validate → execute →
     //    `<tool_result>` message appended → it continues, up to `max_hops`,
-    //    then a forced no-tools summary. An empty registry sends no `tools`
-    //    array at all, so without tools this runs exactly once — M0 behavior.
-    let tool_specs = state.tool_registry.specs();
+    //    then a forced no-tools summary. With no workspace bound the model
+    //    has zero FS access (§6.3) — no `tools` array at all, M0 behavior.
+    //    MCP servers (M3) extend this predicate beyond workspace-bound tools.
+    let tool_specs = if conv.workspace_roots.is_empty() {
+        Vec::new()
+    } else {
+        state.tool_registry.specs()
+    };
     let mut all_text = String::new();
     let mut all_reasoning = String::new();
     let mut usage_total = (0u64, 0u64, 0u64);
@@ -1574,6 +1579,20 @@ mod tests {
             }));
     }
 
+    /// Bind a workspace root on c1 — tool specs are only declared for
+    /// conversations with a bound workspace (§6.3, M2.4).
+    async fn bind_root(state: &AppState, conv: &str) {
+        let root = tempfile::tempdir().unwrap(); // string storage only
+        state
+            .db
+            .set_conversation_workspaces(
+                conv.to_string(),
+                vec![root.path().display().to_string()],
+            )
+            .await
+            .unwrap();
+    }
+
     fn last_tool_message(req: &ChatRequest) -> &ChatMessage {
         req.messages
             .iter()
@@ -1592,6 +1611,7 @@ mod tests {
         let (_dir, mut state) = app_with(provider);
         with_echo_tool(&mut state);
         create_conv(&state).await;
+        bind_root(&state, "c1").await;
 
         let collected = Arc::new(Mutex::new(Vec::new()));
         let sink = collected.clone();
@@ -1607,9 +1627,10 @@ mod tests {
         assert_eq!(result.latency_ms, 134);
 
         let reqs = received.lock().unwrap_or_else(|p| p.into_inner()).clone();
-        // Hop 0 declares the tool; hop 1 still has it (budget not exhausted).
+        // Hop 0 declares the registered tools (bundled fs reads + echo);
+        // hop 1 still has them (budget not exhausted).
         let specs0 = reqs[0].tools.as_ref().expect("tools declared on hop 0");
-        assert_eq!(specs0[0].name, "echo");
+        assert!(specs0.iter().any(|s| s.name == "echo"), "{:?}", specs0.iter().map(|s| s.name.clone()).collect::<Vec<_>>());
         assert!(reqs[1].tools.is_some());
 
         // The context for hop 1: assistant echo of the tool call + the
@@ -1736,6 +1757,7 @@ mod tests {
         );
         with_echo_tool(&mut state);
         create_conv(&state).await;
+        bind_root(&state, "c1").await;
 
         let result = chat_send_inner(&state, args("go")).await.unwrap();
         assert_eq!(result.status, MessageStatus::Complete);
@@ -1759,14 +1781,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn no_tools_registered_sends_no_tool_specs() {
+    async fn no_workspace_bound_sends_no_tool_specs() {
         let provider = FakeProvider::scripted(main_stream("hi", 2));
         let received = provider.received.clone();
         let (_dir, state) = app_with(provider);
         create_conv(&state).await;
         chat_send_inner(&state, args("hi")).await.unwrap();
         let reqs = received.lock().unwrap_or_else(|p| p.into_inner()).clone();
-        assert!(reqs[0].tools.is_none(), "empty registry ⇒ no tools array");
+        assert!(
+            reqs[0].tools.is_none(),
+            "no workspace bound ⇒ model has zero FS access (§6.3)"
+        );
     }
 
     #[tokio::test]
