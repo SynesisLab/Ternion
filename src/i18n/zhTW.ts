@@ -135,6 +135,18 @@ export const zhTW: Record<I18nKey, string> = {
   "settings.mcp.testing": "…",
   "settings.mcp.tools": "個工具",
 
+  "settings.owui.title": "OpenWebUI 工具",
+  "settings.owui.hint":
+    "貼上 OpenWebUI Tools 資訊清單（Python class Tools）。其方法會以 owui__<名稱>__<方法> 呼叫本機 Python 執行，並在每次呼叫前徵求核准。",
+  "settings.owui.none": "尚未設定任何資訊清單。",
+  "settings.owui.add": "新增資訊清單",
+  "settings.owui.name": "名稱",
+  "settings.owui.namePlaceholder": "天氣工具",
+  "settings.owui.sourcePlaceholder": "class Tools:\n    def get_weather(self, city: str) -> str:\n        \"\"\"Get the weather for a city.\"\"\"\n        return \"sunny\"",
+  "settings.owui.test": "測試",
+  "settings.owui.testing": "…",
+  "settings.owui.tools": "個方法",
+
   // Capability registry (M3, §5.4)
   "settings.models.title": "能力登錄 — 手動紀錄優先於探測結果",
   "settings.models.none": "尚未發現任何模型",

@@ -315,6 +315,8 @@ async fn stream_once(
     };
     // MCP servers (§6.5) merge regardless of workspaces.
     tool_specs.extend(state.mcp.enabled_specs(&state.db).await);
+    // §6.5b: OpenWebUI manifests merge the same way, namespaced `owui__`.
+    tool_specs.extend(crate::owui::enabled_specs(&state.db).await);
 
     // 6.5 Context compression (§6.5c): when the assembled context approaches
     //    the routed model's window, the older prefix is summarized —
@@ -748,9 +750,13 @@ async fn execute_tool_call(
     cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<(String, bool, Vec<crate::img::StoredImage>), CmdError> {
     // §6.5: namespaced MCP calls dispatch to the MCP manager instead of the
-    // bundled registry — same gate (§6.6), same persistence.
+    // bundled registry — same gate (§6.6), same persistence. §6.5b: OpenWebUI
+    // tools dispatch to their Python adapter the same way.
     if call.name.starts_with(crate::mcp::MCP_PREFIX) {
         return execute_mcp_call(state, message_id, call, workspaces, forward, cancel).await;
+    }
+    if call.name.starts_with(crate::owui::OWUI_PREFIX) {
+        return execute_owui_call(state, message_id, call, workspaces, forward, cancel).await;
     }
 
     let row_id = ids::new_id();
@@ -951,6 +957,71 @@ async fn execute_mcp_call(
     Ok((result_text, is_error, images))
 }
 
+/// An `owui__*` call — same shape as execute_mcp_call (§6.5b): full §6.6
+/// gate, same persistence, but the executor is the local Python adapter.
+/// Results are clamped here — bundled tools cap themselves, a third-party
+/// function does not.
+async fn execute_owui_call(
+    state: &AppState,
+    message_id: &str,
+    call: &crate::types::ToolCall,
+    workspaces: &[String],
+    forward: &Arc<dyn Fn(&StreamEvent) + Send + Sync>,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<(String, bool, Vec<crate::img::StoredImage>), CmdError> {
+    let row_id = ids::new_id();
+    let now = ids::now_ms();
+    state
+        .db
+        .insert_tool_call(
+            row_id.clone(),
+            message_id.to_string(),
+            call.name.clone(),
+            call.args.clone(),
+            now,
+        )
+        .await?;
+
+    // Everything OpenWebUI gates (§6.6), so the policy is decided
+    // unconditionally.
+    let args: serde_json::Value =
+        serde_json::from_str(&call.args).unwrap_or(serde_json::Value::Null);
+    let permission_mode = match resolve_policy(state, &call.name, &args, workspaces).await.as_str() {
+        "always" => "always".to_string(),
+        "session" => "session".to_string(),
+        _ => {
+            match request_approval(state, call, &args, workspaces, None, forward, cancel).await? {
+                ApprovalDecision::Denied => {
+                    let msg = "user denied this operation".to_string();
+                    state
+                        .db
+                        .finish_tool_call(
+                            row_id.clone(),
+                            msg.clone(),
+                            "error".to_string(),
+                            Some("denied".into()),
+                        )
+                        .await?;
+                    return Ok((msg, true, Vec::new()));
+                }
+                ApprovalDecision::Allowed { mode, edited: _ } => mode,
+            }
+        }
+    };
+
+    let executed = crate::owui::call(&state.db, &call.name, args).await;
+    let (result_text, is_error) = match executed {
+        Ok(text) => (crate::tools::clamp_result(text), false),
+        Err(e) => (e, true),
+    };
+    let status = if is_error { "error" } else { "ok" };
+    state
+        .db
+        .finish_tool_call(row_id, result_text.clone(), status.to_string(), Some(permission_mode))
+        .await?;
+    Ok((result_text, is_error, Vec::new()))
+}
+
 /// Session grant → persisted "always" row → default ask.
 /// Returns "session" | "always" | "ask".
 async fn resolve_policy(
@@ -993,10 +1064,13 @@ async fn resolve_policy(
     "ask".to_string()
 }
 
-/// The matrix root for a grant — MCP tools (no path argument) key on the
-/// empty root; bundled tools on the containing workspace (§6.5/§6.6).
+/// The matrix root for a grant — MCP and OpenWebUI tools (no path argument)
+/// key on the empty root; bundled tools on the containing workspace
+/// (§6.5/§6.5b/§6.6).
 fn grant_root(tool: &str, workspaces: &[String], raw: &str) -> Option<String> {
-    if tool.starts_with(crate::mcp::MCP_PREFIX) {
+    if tool.starts_with(crate::mcp::MCP_PREFIX)
+        || tool.starts_with(crate::owui::OWUI_PREFIX)
+    {
         return Some(String::new());
     }
     matrix_root(workspaces, raw)
@@ -1184,9 +1258,12 @@ fn build_approval_payload(
             None,
         ),
         "fs_mkdir" => (format!("creates directory {resolved_path}"), None, None),
-        // §6.5: MCP tools surface their arguments — the model's intent for a
-        // third-party tool is the thing the user is approving.
-        _ if tool.starts_with(crate::mcp::MCP_PREFIX) => {
+        // §6.5/§6.5b: MCP and OpenWebUI tools surface their arguments — the
+        // model's intent for a third-party tool is the thing the user is
+        // approving.
+        _ if tool.starts_with(crate::mcp::MCP_PREFIX)
+            || tool.starts_with(crate::owui::OWUI_PREFIX) =>
+        {
             let rendered = serde_json::to_string(args).unwrap_or_default();
             let shown: String = if rendered.chars().count() > 800 {
                 rendered.chars().take(800).collect::<String>() + "…"

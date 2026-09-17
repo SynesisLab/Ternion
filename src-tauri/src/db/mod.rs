@@ -17,8 +17,8 @@ use crate::{
     error::CmdError,
     types::{
         Attachment, ChatRole, ContentPart, Conversation, DecisionSource, EndpointProfile,
-        Message, MessageRouting, MessageStatus, McpServer, ModelRecord, ModelRole, RoleStat,
-        RoutingDecision, RoutingEvent, Target, ToolCallRow, TriadReport,
+        Message, MessageRouting, MessageStatus, McpServer, ModelRecord, ModelRole, OwuiTool,
+        RoleStat, RoutingDecision, RoutingEvent, Target, ToolCallRow, TriadReport,
     },
     ids,
 };
@@ -226,6 +226,51 @@ impl Database {
     pub async fn delete_mcp_server(&self, id: String) -> Result<bool, CmdError> {
         self.run(move |c| {
             let changed = c.execute("DELETE FROM mcp_servers WHERE id = ?1", params![id])?;
+            Ok(changed > 0)
+        })
+        .await
+    }
+
+    // -- OpenWebUI tools (§6.5b) ----------------------------------------------
+
+    /// Stored OpenWebUI tool manifests, oldest first.
+    pub async fn list_owui_tools(&self) -> Result<Vec<OwuiTool>, CmdError> {
+        self.run(|c| {
+            let mut stmt = c.prepare(
+                "SELECT id, name, source, enabled FROM owui_tools ORDER BY created_at, rowid",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok(OwuiTool {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    source: r.get(2)?,
+                    enabled: r.get::<_, i64>(3)? != 0,
+                })
+            })?;
+            rows.collect()
+        })
+        .await
+    }
+
+    /// Upsert on `id`; the command layer owns validation and timestamps.
+    pub async fn upsert_owui_tool(&self, tool: OwuiTool, now: i64) -> Result<(), CmdError> {
+        self.run(move |c| {
+            c.execute(
+                "INSERT INTO owui_tools (id, name, source, enabled, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+                 ON CONFLICT(id) DO UPDATE SET
+                    name = excluded.name, source = excluded.source,
+                    enabled = excluded.enabled, updated_at = excluded.updated_at",
+                params![tool.id, tool.name, tool.source, tool.enabled as i64, now],
+            )
+            .map(|_| ())
+        })
+        .await
+    }
+
+    pub async fn delete_owui_tool(&self, id: String) -> Result<bool, CmdError> {
+        self.run(move |c| {
+            let changed = c.execute("DELETE FROM owui_tools WHERE id = ?1", params![id])?;
             Ok(changed > 0)
         })
         .await
@@ -1375,6 +1420,42 @@ mod tests {
         let db = Database::open(&path).unwrap();
         let seeds = db.get_all_settings().await.unwrap();
         assert!(seeds.iter().any(|(k, _)| k == "ollama.base_url"));
+    }
+
+    #[tokio::test]
+    async fn owui_tools_roundtrip() {
+        let (_dir, db) = temp_db().await;
+        let now = crate::ids::now_ms();
+        assert!(db.list_owui_tools().await.unwrap().is_empty());
+
+        let tool = crate::types::OwuiTool {
+            id: "owui_t1".into(),
+            name: "Weather Tools".into(),
+            source: "class Tools:\n    def get_weather(self, city: str) -> str:\n        return \"sunny\"".into(),
+            enabled: true,
+        };
+        db.upsert_owui_tool(tool, now).await.unwrap();
+        // Edit on the same id updates in place.
+        db.upsert_owui_tool(
+            crate::types::OwuiTool {
+                id: "owui_t1".into(),
+                name: "Weather".into(),
+                source: "class Tools:\n    pass".into(),
+                enabled: false,
+            },
+            now + 1,
+        )
+        .await
+        .unwrap();
+        let rows = db.list_owui_tools().await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name, "Weather");
+        assert!(!rows[0].enabled);
+        assert!(rows[0].source.contains("pass"));
+
+        assert!(db.delete_owui_tool("owui_t1".into()).await.unwrap());
+        assert!(!db.delete_owui_tool("owui_t1".into()).await.unwrap());
+        assert!(db.list_owui_tools().await.unwrap().is_empty());
     }
 
     #[tokio::test]

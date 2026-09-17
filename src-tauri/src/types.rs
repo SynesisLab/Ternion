@@ -433,6 +433,28 @@ pub struct McpTestResult {
     pub error: Option<String>,
 }
 
+/// A stored OpenWebUI "Tools" manifest (§6.5b) — the raw Python source plus
+/// its display name; specs are parsed per send, so nothing else is cached.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OwuiTool {
+    pub id: String,
+    pub name: String,
+    pub source: String,
+    pub enabled: bool,
+}
+
+/// Result of an OpenWebUI manifest test — parse verdict plus a Python
+/// interpreter probe (a manifest can be valid yet have no interpreter).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OwuiTestResult {
+    pub ok: bool,
+    pub latency_ms: u64,
+    pub tools: Vec<String>,
+    pub error: Option<String>,
+}
+
 /// Result of a finished `chat_send` invocation.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

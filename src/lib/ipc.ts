@@ -326,3 +326,37 @@ export function deleteMcpServer(id: string): Promise<void> {
 export function testMcpServer(command: string): Promise<McpTestResult> {
   return invoke<McpTestResult>("test_mcp_server", { command });
 }
+
+// -- OpenWebUI tools (§6.5b) --------------------------------------------------
+
+export interface OwuiTool {
+  id: string;
+  name: string;
+  /** Raw Python `class Tools` manifest source. */
+  source: string;
+  enabled: boolean;
+}
+
+export interface OwuiTestResult {
+  ok: boolean;
+  latencyMs: number;
+  /** Public method names of the parsed `class Tools`. */
+  tools: string[];
+  error: string | null;
+}
+
+export function listOwuiTools(): Promise<OwuiTool[]> {
+  return invoke<OwuiTool[]>("list_owui_tools");
+}
+
+export function saveOwuiTool(tool: OwuiTool): Promise<OwuiTool> {
+  return invoke<OwuiTool>("save_owui_tool", { tool });
+}
+
+export function deleteOwuiTool(id: string): Promise<void> {
+  return invoke("delete_owui_tool", { id });
+}
+
+export function testOwuiTool(source: string): Promise<OwuiTestResult> {
+  return invoke<OwuiTestResult>("test_owui_tool", { source });
+}

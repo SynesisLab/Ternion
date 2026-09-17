@@ -6,6 +6,7 @@ mod error;
 mod ids;
 mod img;
 mod mcp;
+mod owui;
 mod permissions;
 mod providers;
 mod router;
@@ -83,6 +84,10 @@ pub fn run() {
             commands::save_mcp_server,
             commands::delete_mcp_server,
             commands::test_mcp_server,
+            commands::list_owui_tools,
+            commands::save_owui_tool,
+            commands::delete_owui_tool,
+            commands::test_owui_tool,
             commands::save_attachment,
             commands::save_attachment_file,
             commands::capture_region,

@@ -6,26 +6,32 @@ import {
   clearSessionPermissions,
   deleteEndpointProfile,
   deleteMcpServer,
+  deleteOwuiTool,
   getSetting,
   listEndpointProfiles,
   listMcpServers,
   listModels,
+  listOwuiTools,
   listToolPermissions,
   resetAdaptive,
   saveEndpointProfile,
   saveMcpServer,
   saveModelRecord,
+  saveOwuiTool,
   setEndpointApiKey,
   setSetting,
   setToolPermission,
   testEndpoint,
   testMcpServer,
+  testOwuiTool,
   triadReport,
   verifyModel,
   type EndpointProfile,
   type EndpointTestResult,
   type McpServer,
   type McpTestResult,
+  type OwuiTestResult,
+  type OwuiTool,
   type ToolPermissionRow,
 } from "../lib/ipc";
 import type { ModelInfo, TriadReport } from "../types/chat";
@@ -1297,6 +1303,208 @@ function McpTab() {
           className="rounded-lg border border-dashed border-[color:var(--color-edge)] px-3 py-1.5 text-xs text-[color:var(--color-muted)] hover:border-[color:var(--color-accent)] hover:text-[color:var(--color-ink)]"
         >
           + {t("settings.mcp.add")}
+        </button>
+      )}
+
+      <OwuiToolsSection />
+    </div>
+  );
+}
+
+/** OpenWebUI "Tools" manifests (§6.5b): raw Python `class Tools` sources.
+ * Their public methods merge into chat as owui__<name>__<method> and gate
+ * like MCP tools — ask per call until an "always" grant is set. */
+function OwuiToolsSection() {
+  const [tools, setTools] = useState<OwuiTool[]>([]);
+  const [addOpen, setAddOpen] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [newSource, setNewSource] = useState("");
+  const [testResults, setTestResults] = useState<Record<string, OwuiTestResult>>({});
+  const [testing, setTesting] = useState<Record<string, boolean>>({});
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    void reload();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const reload = async () => {
+    setTools(await listOwuiTools().catch(() => []));
+  };
+
+  const runTest = (tool: OwuiTool) => {
+    setTesting((s) => ({ ...s, [tool.id]: true }));
+    void testOwuiTool(tool.source)
+      .then((result) => setTestResults((s) => ({ ...s, [tool.id]: result })))
+      .catch(
+        () =>
+          setTestResults((s) => ({
+            ...s,
+            [tool.id]: { ok: false, latencyMs: 0, tools: [], error: "unreachable" },
+          })),
+      )
+      .finally(() => setTesting((s) => ({ ...s, [tool.id]: false })));
+  };
+
+  const addTool = async () => {
+    setError(null);
+    try {
+      await saveOwuiTool({
+        id: "",
+        name: newName.trim(),
+        source: newSource,
+        enabled: true,
+      });
+      setNewName("");
+      setNewSource("");
+      setAddOpen(false);
+      await reload();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const toggleEnabled = async (tool: OwuiTool) => {
+    await saveOwuiTool({ ...tool, enabled: !tool.enabled }).catch((e) => setError(String(e)));
+    await reload();
+  };
+
+  const dropTool = async (tool: OwuiTool) => {
+    await deleteOwuiTool(tool.id).catch(() => {});
+    await reload();
+  };
+
+  return (
+    <div className="space-y-3 border-t border-[color:var(--color-edge)] pt-3">
+      <div className="text-xs font-medium text-[color:var(--color-muted)]">
+        {t("settings.owui.title")}
+      </div>
+      <div className="text-xs text-[color:var(--color-muted)]">{t("settings.owui.hint")}</div>
+
+      {tools.length === 0 && (
+        <div className="rounded-lg border border-[color:var(--color-edge)] px-3 py-4 text-center text-xs text-[color:var(--color-muted)]">
+          {t("settings.owui.none")}
+        </div>
+      )}
+
+      <div className="divide-y divide-[color:var(--color-edge)] rounded-lg border border-[color:var(--color-edge)]">
+        {tools.map((tool) => {
+          const result = testResults[tool.id];
+          const busy = testing[tool.id];
+          const firstLine = tool.source.trim().split("\n")[0]?.trim() ?? "";
+          return (
+            <div key={tool.id} className="space-y-1.5 px-3 py-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="truncate text-sm text-[color:var(--color-ink)]">
+                    {tool.name}
+                  </div>
+                  <div className="truncate font-mono text-xs text-[color:var(--color-muted)]">
+                    {firstLine}
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void toggleEnabled(tool)}
+                    className={`rounded px-1.5 py-0.5 text-[10px] ${
+                      tool.enabled
+                        ? "text-[color:var(--color-accent-2)]"
+                        : "text-[color:var(--color-muted)]"
+                    }`}
+                  >
+                    {tool.enabled ? "●" : "○"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void runTest(tool)}
+                    className="rounded-lg border border-[color:var(--color-edge)] px-2 py-1 text-xs text-[color:var(--color-ink)] hover:border-[color:var(--color-accent)]"
+                  >
+                    {busy ? t("settings.owui.testing") : t("settings.owui.test")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void dropTool(tool)}
+                    className="rounded-lg border border-[color:var(--color-edge)] px-2 py-1 text-xs text-[color:var(--color-muted)] hover:text-[color:var(--color-danger)]"
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+
+              <div className="min-h-4 text-xs">
+                {result?.ok && (
+                  <span className="text-[color:var(--color-accent-2)]">
+                    ✓ {result.tools.length} {t("settings.owui.tools")} ·{" "}
+                    {result.latencyMs} ms
+                  </span>
+                )}
+                {result && !result.ok && (
+                  <span className="break-all text-[color:var(--color-danger)]">
+                    ✕ {result.error}
+                  </span>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {error && (
+        <div className="break-all text-xs text-[color:var(--color-danger)]">{error}</div>
+      )}
+
+      {addOpen ? (
+        <div className="space-y-2 rounded-lg border border-[color:var(--color-edge)] p-3">
+          <div className="grid grid-cols-2 gap-2">
+            <label className="block">
+              <span className="mb-1 block text-[11px] font-medium text-[color:var(--color-muted)]">
+                {t("settings.owui.name")}
+              </span>
+              <input
+                type="text"
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                placeholder={t("settings.owui.namePlaceholder")}
+                className="w-full rounded-lg border border-[color:var(--color-edge)] bg-[color:var(--color-bg)] px-2.5 py-1.5 text-sm outline-none focus:border-[color:var(--color-accent)]"
+              />
+            </label>
+            <div className="flex items-end pb-0.5 text-[11px] text-[color:var(--color-muted)]">
+              owui__{sanitizePreview(newName)}__&lt;method&gt;
+            </div>
+          </div>
+          <textarea
+            value={newSource}
+            onChange={(e) => setNewSource(e.target.value)}
+            placeholder={t("settings.owui.sourcePlaceholder")}
+            rows={8}
+            className="w-full rounded-lg border border-[color:var(--color-edge)] bg-[color:var(--color-bg)] px-2.5 py-1.5 font-mono text-xs outline-none focus:border-[color:var(--color-accent)]"
+          />
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setAddOpen(false)}
+              className="rounded-lg border border-[color:var(--color-edge)] px-3 py-1.5 text-xs text-[color:var(--color-muted)] hover:text-[color:var(--color-ink)]"
+            >
+              {t("settings.close")}
+            </button>
+            <button
+              type="button"
+              onClick={() => void addTool()}
+              disabled={!newName.trim() || !newSource.trim()}
+              className="rounded-lg bg-[color:var(--color-accent)] px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-40"
+            >
+              {t("settings.owui.add")}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setAddOpen(true)}
+          className="rounded-lg border border-dashed border-[color:var(--color-edge)] px-3 py-1.5 text-xs text-[color:var(--color-muted)] hover:border-[color:var(--color-accent)] hover:text-[color:var(--color-ink)]"
+        >
+          + {t("settings.owui.add")}
         </button>
       )}
     </div>

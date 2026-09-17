@@ -129,6 +129,18 @@ export const en = {
   "settings.mcp.testing": "…",
   "settings.mcp.tools": "tools",
 
+  "settings.owui.title": "OpenWebUI tools",
+  "settings.owui.hint":
+    "Paste OpenWebUI Tools manifests (Python class Tools). Their methods appear as owui__<name>__<method>, run through a local Python, and ask for approval per call.",
+  "settings.owui.none": "No manifests configured yet.",
+  "settings.owui.add": "Add manifest",
+  "settings.owui.name": "Name",
+  "settings.owui.namePlaceholder": "Weather Tools",
+  "settings.owui.sourcePlaceholder": "class Tools:\n    def get_weather(self, city: str) -> str:\n        \"\"\"Get the weather for a city.\"\"\"\n        return \"sunny\"",
+  "settings.owui.test": "Test",
+  "settings.owui.testing": "…",
+  "settings.owui.tools": "methods",
+
   // Capability registry (M3, §5.4)
   "settings.models.title": "Capability registry — chips override discovery facts",
   "settings.models.none": "No models discovered yet",
