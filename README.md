@@ -2,6 +2,8 @@
 
 One interface. Three models. The right model for every message.
 
+> **English** | [繁體中文](./README.zh-TW.md)
+
 > **Ternion is a proof of concept for the Triad model routing system** — a
 > Herald / Scout / Titan architecture where a lightweight classifier routes
 > each message to the right model (and, since M3, the right endpoint).
