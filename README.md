@@ -11,7 +11,7 @@ It speaks native Ollama and any OpenAI-compatible endpoint. See
 [DESIGN.md](./DESIGN.md) for the full product design (the Triad system:
 Herald / Scout / Titan routing).
 
-## Status — M0 + M1 (Triad router) + M2 (tools & file-system agency) complete
+## Status — M0–M3 complete (Triad router, tools, vision & multi-endpoint)
 
 **Foundation (M0)**
 
@@ -77,7 +77,36 @@ Herald / Scout / Titan routing).
   then a forced no-tools summary; every call persisted with its outcome and
   permission mode; live tool activity renders in the chat
 
-Later milestones: vision & multi-endpoint (M3), polish/i18n/signing (M4).
+**Vision & multi-endpoint (M3)** — DESIGN.md §5, §7:
+
+- **Endpoint profiles**: named Ollama / OpenAI-compatible endpoints
+  (Settings → Endpoints) with base URL, optional API key, custom headers,
+  enable toggle, and a connection test that lists discovered models
+- **OpenAI-compatible adapter**: SSE streaming (with tool calls) compiled to
+  the same normalized stream protocol as the Ollama adapter
+- **Model refs**: a bare name means built-in Ollama; `model@endpoint_id`
+  means a profile — Triad roles, pins, and capability records all resolve
+  per endpoint, and a mid-conversation upgrade can move turns across
+  providers
+- **Capability registry**: per (endpoint, model) facts — capabilities,
+  context length, role, VRAM estimate — verified via Ollama `/api/show` or
+  edited by hand (Settings → Models tab)
+- **Image attachments (§7.2)**: paste, drag-drop, file picker, or the region
+  capture below → decode → EXIF orientation fix → downscale (long edge
+  ≤ 1568) → JPEG q85; files stored sha256-keyed next to the database, DB
+  rows keep paths only, and the base64 body is hydrated fresh for each
+  provider hop
+- **Vision routing (§7.6)**: any attached image forces a vision-capable
+  model — auto turns upgrade (Scout → vision Scout → Titan → first capable
+  registry model), pinned turns surface a warning chip with a one-click fix
+  instead of being overridden
+- **Region capture**: `Win+Alt+S` opens a crosshair overlay over the monitor
+  under the cursor; the drag rect (Esc cancels) goes through the IMG
+  pipeline and lands in the composer as a pending attachment chip
+
+Polish remains for M4 (Triad report, adaptive routing, zh-Hant i18n, updater,
+packaging); the MCP client (stdio) from the original M3 scope moved to the
+post-v1 backlog.
 
 ## Prerequisites
 
@@ -95,8 +124,9 @@ npm install
 npm run tauri dev
 ```
 
-The SQLite database lives at `%APPDATA%\com.paperplane.ternion\ternion.db`;
-logs at `%APPDATA%\com.paperplane.ternion\logs\ternion.log`.
+The SQLite database lives at `%LOCALAPPDATA%\com.paperplane.ternion\ternion.db`,
+attachment files under `attachments\` beside it; logs at
+`%LOCALAPPDATA%\com.paperplane.ternion\logs\ternion.log`.
 
 ## Build
 
