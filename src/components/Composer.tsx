@@ -1,6 +1,23 @@
 import { useEffect, useRef, useState } from "react";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 
+import { saveAttachment, saveAttachmentFile } from "../lib/ipc";
 import { t } from "../i18n";
+import type { Attachment } from "../types/chat";
+
+/** Only these file extensions are offered to the backend on drop/pick. */
+const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp)$/i;
+
+/** ArrayBuffer → base64 (chunked to avoid call-stack limits). */
+function toBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
 
 export function Composer({
   onSend,
@@ -13,7 +30,7 @@ export function Composer({
   escalation = false,
   onContinueTitan,
 }: {
-  onSend: (text: string) => void;
+  onSend: (text: string, attachments: Attachment[]) => void;
   onStop: () => void;
   streaming: boolean;
   /** No model available / not initialized. */
@@ -27,7 +44,10 @@ export function Composer({
   onContinueTitan?: () => void;
 }) {
   const [text, setText] = useState("");
+  const [pending, setPending] = useState<Attachment[]>([]);
+  const [attachError, setAttachError] = useState(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   // Autosize up to ~200px.
   useEffect(() => {
@@ -37,12 +57,64 @@ export function Composer({
     ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
   }, [text]);
 
-  const canSend = !disabled && !streaming && text.trim().length > 0;
+  // §7.1: OS file drops land wherever the user released them — the listener
+  // is webview-wide and every image path goes through the IMG pipeline.
+  useEffect(() => {
+    const unlisten = getCurrentWebview().onDragDropEvent((event) => {
+      if (event.payload.type !== "drop") return;
+      const images = event.payload.paths.filter((p) => IMAGE_EXT.test(p));
+      if (images.length > 0) void addFiles(images);
+    });
+    return () => {
+      void unlisten.then((f) => f());
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function addFiles(paths: string[]) {
+    setAttachError(false);
+    for (const path of paths) {
+      try {
+        const att = await saveAttachmentFile(path);
+        setPending((p) => [...p, att]);
+      } catch {
+        setAttachError(true);
+      }
+    }
+  }
+
+  async function addBlobs(files: File[]) {
+    setAttachError(false);
+    for (const file of files) {
+      try {
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        const att = await saveAttachment(toBase64(bytes), file.name);
+        setPending((p) => [...p, att]);
+      } catch {
+        setAttachError(true);
+      }
+    }
+  }
+
+  const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = [...e.clipboardData.items]
+      .filter((i) => i.kind === "file" && i.type.startsWith("image/"))
+      .map((i) => i.getAsFile())
+      .filter((f): f is File => f !== null);
+    if (files.length > 0) {
+      e.preventDefault();
+      void addBlobs(files);
+    }
+  };
+
+  const canSend = !disabled && !streaming && (text.trim().length > 0 || pending.length > 0);
 
   const send = () => {
     if (!canSend) return;
-    onSend(text);
+    onSend(text, pending);
     setText("");
+    setPending([]);
+    setAttachError(false);
     // Refocus after the bubble insert re-renders.
     requestAnimationFrame(() => taRef.current?.focus());
   };
@@ -86,13 +158,69 @@ export function Composer({
             ))}
           </div>
         )}
+        {attachError && (
+          <div className="mb-2 text-xs text-[color:var(--color-danger)]">
+            {t("chat.attach.failed")}
+          </div>
+        )}
+        {pending.length > 0 && (
+          <div className="mb-2 flex flex-wrap gap-2">
+            {pending.map((att) => (
+              <div
+                key={att.id}
+                className="group relative overflow-hidden rounded-lg border border-[color:var(--color-edge)]"
+                title={`${att.width}×${att.height}`}
+              >
+                <img
+                  src={convertFileSrc(att.processedPath)}
+                  alt=""
+                  className="h-14 w-14 object-cover"
+                />
+                <button
+                  type="button"
+                  onClick={() =>
+                    setPending((p) => p.filter((a) => a.id !== att.id))
+                  }
+                  title={t("chat.attach.remove")}
+                  className="absolute top-0.5 right-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-black/60 text-[10px] leading-none text-white opacity-0 transition-opacity group-hover:opacity-100"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         <div className="flex items-end gap-2">
+          <input
+            ref={fileRef}
+            type="file"
+            accept="image/png,image/jpeg,image/gif,image/webp,image/bmp"
+            multiple
+            className="hidden"
+            onChange={(e) => {
+              void addBlobs([...(e.target.files ?? [])]);
+              // Allow re-picking the same file.
+              e.target.value = "";
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => fileRef.current?.click()}
+            disabled={disabled || streaming}
+            title={t("chat.attach.add")}
+            className="shrink-0 rounded-xl border border-[color:var(--color-edge)] bg-[color:var(--color-panel)] px-2.5 py-2.5 text-[color:var(--color-muted)] hover:border-[color:var(--color-accent)] hover:text-[color:var(--color-ink)] disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+            </svg>
+          </button>
           <textarea
             ref={taRef}
             rows={1}
             value={text}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={onKeyDown}
+            onPaste={onPaste}
             placeholder={
               offline
                 ? t("chat.input.placeholder.offline")

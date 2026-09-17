@@ -21,6 +21,10 @@ pub struct ChatSendArgs {
     /// Model *reference* (§5.1): bare `"gemma3:4b"` targets the built-in
     /// local Ollama; `"model@endpoint_id"` targets an endpoint profile.
     pub model: String,
+    /// Attachment rows (§7.2) the composer saved before sending; they are
+    /// linked to the user message and ride the request as image parts.
+    #[serde(default)]
+    pub attachment_ids: Vec<String>,
 }
 
 #[tauri::command]

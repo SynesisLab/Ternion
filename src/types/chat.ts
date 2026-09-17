@@ -19,8 +19,26 @@ export type ContentPart =
       type: "image";
       attachmentId: string;
       mime: string;
+      /** Present only on hydrated provider payloads — never on UI rows. */
       dataBase64?: string;
+      /** Processed render path, in asset-protocol scope (§7.2). */
+      processedPath?: string;
     };
+
+/** A persisted image attachment (design §7.2). */
+export interface Attachment {
+  id: string;
+  messageId: string | null;
+  kind: string;
+  path: string;
+  processedPath: string;
+  mime: string;
+  width: number;
+  height: number;
+  bytes: number;
+  sha256: string;
+  createdAt: number;
+}
 
 export interface Conversation {
   id: string;

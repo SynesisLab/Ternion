@@ -1030,6 +1030,30 @@ fn get_messages_sync(conn: &Connection, conversation_id: &str, limit: i64) -> Db
     let rows = stmt.query_map(params![conversation_id, limit], |r| row_to_message(r))?;
     let mut msgs: Vec<Message> = rows.collect::<Result<_, _>>()?;
 
+    // Image parts (§7.2) carry attachment ids only; hydrate the processed
+    // render path so the webview can draw them via the asset protocol. One
+    // join query per read, matched back by id.
+    let mut processed: HashMap<String, String> = HashMap::new();
+    let mut att_stmt = conn.prepare(
+        "SELECT a.id, a.processed_path
+         FROM attachments a
+         JOIN messages m ON a.message_id = m.id
+         WHERE m.conversation_id = ?1",
+    )?;
+    let att_rows = att_stmt.query_map(params![conversation_id], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })?;
+    for (id, path) in att_rows.collect::<Result<Vec<_>, _>>()? {
+        processed.insert(id, path);
+    }
+    for msg in msgs.iter_mut() {
+        for part in msg.content.iter_mut() {
+            if let ContentPart::Image { attachment_id, processed_path, .. } = part {
+                *processed_path = processed.get(attachment_id).cloned();
+            }
+        }
+    }
+
     // Attach tool activity (§6.1) in one pass, preserving per-message order.
     let mut by_message: HashMap<String, Vec<ToolCallRow>> = HashMap::new();
     for call in tool_calls_for_conversation_sync(conn, conversation_id)? {

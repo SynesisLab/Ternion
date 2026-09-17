@@ -21,6 +21,11 @@ export const en = {
   "chat.meta.stopped": "Stopped",
   "chat.meta.error": "Error",
 
+  // Attachments (M3.6)
+  "chat.attach.add": "Attach images",
+  "chat.attach.remove": "Remove",
+  "chat.attach.failed": "Couldn't add that image.",
+
   // Tool runtime (M2)
   "chat.tools.activity": "Tool activity",
   "chat.tools.running": "running…",

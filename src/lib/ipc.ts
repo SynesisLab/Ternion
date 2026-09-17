@@ -1,6 +1,7 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 
 import type {
+  Attachment,
   ChatSendResult,
   Conversation,
   Message,
@@ -75,6 +76,8 @@ export interface ChatSendArgs {
   userMessageId: string;
   content: string;
   model: string;
+  /** Attachment rows (§7.2) saved before sending; linked to the message. */
+  attachmentIds: string[];
 }
 
 export function sendChat(
@@ -88,6 +91,23 @@ export function sendChat(
 
 export function stopChat(conversationId: string): Promise<void> {
   return invoke("chat_stop", { conversationId });
+}
+
+// -- Attachments (design §7) -----------------------------------------------
+
+/** Image bytes (clipboard paste) → IMG pipeline → stored row. */
+export function saveAttachment(
+  dataBase64: string,
+  sourceName?: string,
+): Promise<Attachment> {
+  return invoke<Attachment>("save_attachment", {
+    args: { dataBase64, sourceName },
+  });
+}
+
+/** Drag-drop / picked file paths; reading stays in Rust (§10.3). */
+export function saveAttachmentFile(path: string): Promise<Attachment> {
+  return invoke<Attachment>("save_attachment_file", { path });
 }
 
 /** Router log drawer (§9.2): recent decisions, newest first. */

@@ -1,8 +1,9 @@
 import { memo } from "react";
+import { convertFileSrc } from "@tauri-apps/api/core";
 
 import { formatLatency, formatTokens } from "../lib/format";
 import { t } from "../i18n";
-import type { Message } from "../types/chat";
+import type { ContentPart, Message } from "../types/chat";
 import { Markdown } from "./Markdown";
 import { RoutingRibbon } from "./RoutingRibbon";
 import { ThinkingBlock } from "./ThinkingBlock";
@@ -15,6 +16,28 @@ function textOf(message: Message): string {
     .join("");
 }
 
+/** One image part in a user bubble; falls back to a stub when the path
+ * didn't hydrate (file moved, §7.2). */
+function UserImage({ part }: { part: Extract<ContentPart, { type: "image" }> }) {
+  if (!part.processedPath) {
+    return (
+      <div
+        title={part.mime}
+        className="flex h-20 w-28 items-center justify-center rounded-xl border border-[color:var(--color-edge)] bg-[color:var(--color-panel)] text-[color:var(--color-muted)]"
+      >
+        🖼
+      </div>
+    );
+  }
+  return (
+    <img
+      src={convertFileSrc(part.processedPath)}
+      alt=""
+      className="max-h-56 rounded-xl border border-[color:var(--color-accent)]/25 object-cover"
+    />
+  );
+}
+
 export const MessageBubble = memo(function MessageBubble({
   message,
   switched = false,
@@ -24,10 +47,26 @@ export const MessageBubble = memo(function MessageBubble({
   switched?: boolean;
 }) {
   if (message.role === "user") {
+    const images = message.content.filter((p) => p.type === "image");
+    const text = textOf(message);
     return (
       <div className="flex justify-end">
-        <div className="max-w-[80%] whitespace-pre-wrap rounded-2xl rounded-br-md border border-[color:var(--color-accent)]/25 bg-[color:var(--color-accent)]/15 px-4 py-2.5 text-sm leading-relaxed text-[color:var(--color-ink)]">
-          {textOf(message)}
+        <div className="max-w-[80%] space-y-2">
+          {images.length > 0 && (
+            <div className="flex flex-wrap justify-end gap-1.5">
+              {images.map((img) => (
+                <UserImage
+                  key={img.attachmentId}
+                  part={img as Extract<ContentPart, { type: "image" }>}
+                />
+              ))}
+            </div>
+          )}
+          {text && (
+            <div className="whitespace-pre-wrap rounded-2xl rounded-br-md border border-[color:var(--color-accent)]/25 bg-[color:var(--color-accent)]/15 px-4 py-2.5 text-sm leading-relaxed text-[color:var(--color-ink)]">
+              {text}
+            </div>
+          )}
         </div>
       </div>
     );

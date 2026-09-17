@@ -30,6 +30,7 @@ import { t } from "../i18n";
 import { newId } from "../lib/uuid";
 import type {
   ApprovalRequestView,
+  Attachment,
   ConnectionStatus,
   Conversation,
   Message,
@@ -118,7 +119,7 @@ interface ChatStore {
   setPin: (value: string) => void;
   /** Explicit model fallback (M0-style picker selection). */
   setModel: (modelId: string) => void;
-  sendMessage: (text: string) => Promise<void>;
+  sendMessage: (text: string, attachments?: Attachment[]) => Promise<void>;
   /** Resolve a pending approval (§6.6): allow/deny, scope, optional edit. */
   respondApproval: (requestId: string, reply: ApprovalReply) => Promise<void>;
   /** ⚡ Continue with Titan (§3.6): pins titan, asks for the rest of the answer. */
@@ -335,10 +336,11 @@ export const useChatStore = create<ChatStore>()((set, get) => ({
     }
   },
 
-  async sendMessage(text) {
+  async sendMessage(text, attachments = []) {
     const trimmed = text.trim();
     const { activeId, pin, model, models, streaming } = get();
-    if (!activeId || !trimmed || streaming[activeId]) return;
+    if (!activeId || (!trimmed && attachments.length === 0) || streaming[activeId])
+      return;
 
     // Explicit pin wins; otherwise the last explicit model is the fallback
     // the router needs when the Triad is off (M0 behavior).
@@ -352,7 +354,15 @@ export const useChatStore = create<ChatStore>()((set, get) => ({
       id: userMessageId,
       conversationId: convId,
       role: "user",
-      content: [{ type: "text", text: trimmed }],
+      content: [
+        { type: "text", text: trimmed },
+        ...attachments.map((a) => ({
+          type: "image" as const,
+          attachmentId: a.id,
+          mime: a.mime,
+          processedPath: a.processedPath,
+        })),
+      ],
       modelRole: null,
       modelId: null,
       endpointId: null,
@@ -390,7 +400,13 @@ export const useChatStore = create<ChatStore>()((set, get) => ({
     try {
       // Resolves when the stream ends; deltas arrive through the Channel.
       const result = await sendChat(
-        { conversationId: convId, userMessageId, content: trimmed, model: fallback },
+        {
+          conversationId: convId,
+          userMessageId,
+          content: trimmed,
+          model: fallback,
+          attachmentIds: attachments.map((a) => a.id),
+        },
         (ev) => get().applyStreamEvent(convId, ev),
       );
       // §3.6: Scout ran past its ceiling — offer the Titan continuation

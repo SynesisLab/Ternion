@@ -753,6 +753,7 @@ mod tests {
                     attachment_id: "a1".into(),
                     mime: "image/jpeg".into(),
                     data_base64: Some("AA==".into()),
+                    processed_path: None,
                 },
             ]),
             tool_calls: None,

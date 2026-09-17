@@ -102,8 +102,14 @@ pub enum ContentPart {
     Image {
         attachment_id: String,
         mime: String,
+        /// Provider payload only (§7.2.4): hydrated from disk per request,
+        /// never persisted.
         #[serde(skip_serializing_if = "Option::is_none")]
         data_base64: Option<String>,
+        /// UI render path (the processed JPEG); filled when messages are
+        /// read back so the webview can use the asset protocol.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        processed_path: Option<String>,
     },
 }
 
@@ -562,6 +568,7 @@ mod tests {
             attachment_id: "a1".into(),
             mime: "image/png".into(),
             data_base64: Some("AA==".into()),
+            processed_path: None,
         }).unwrap();
         assert_eq!(image["type"], "image");
         assert_eq!(image["attachmentId"], "a1");

@@ -7,6 +7,8 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use base64::Engine as _;
+
 use tokio::sync::mpsc;
 
 use crate::{
@@ -73,6 +75,53 @@ pub async fn send(
     result
 }
 
+/// Fill image parts with their processed bytes (§7.2.3/§7.2.4): the DB
+/// stores paths only, the provider payload needs base64. Parts already
+/// hydrated stay untouched; a missing or unreadable file logs a warning and
+/// the model just doesn't see that image.
+async fn hydrate_image_parts(state: &AppState, messages: &mut [ChatMessage]) {
+    for msg in messages {
+        let ChatContent::Parts(parts) = &mut msg.content else {
+            continue;
+        };
+        for part in parts.iter_mut() {
+            let crate::types::ContentPart::Image {
+                attachment_id,
+                mime,
+                data_base64,
+                processed_path,
+            } = part
+            else {
+                continue;
+            };
+            if data_base64.is_some() {
+                continue;
+            }
+            let att = match state.db.get_attachment(attachment_id.clone()).await {
+                Ok(Some(att)) => att,
+                Ok(None) => {
+                    log::warn!("image part references unknown attachment {attachment_id}");
+                    continue;
+                }
+                Err(e) => {
+                    log::warn!("attachment lookup failed for {attachment_id}: {e}");
+                    continue;
+                }
+            };
+            *mime = att.mime.clone();
+            *processed_path = Some(att.processed_path.clone());
+            match tokio::fs::read(&att.processed_path).await {
+                Ok(bytes) => {
+                    *data_base64 = Some(
+                        base64::engine::general_purpose::STANDARD.encode(bytes),
+                    );
+                }
+                Err(e) => log::warn!("attachment {} unreadable: {e}", att.id),
+            }
+        }
+    }
+}
+
 async fn stream_once(
     state: &AppState,
     args: &ChatSendArgs,
@@ -90,18 +139,44 @@ async fn stream_once(
     // Stale suggestion chips from the previous exchange are void now.
     state.take_suggestions(&conv_id);
 
-    // 2. Idempotent user message (client-generated id; retry-safe).
+    // 2. Idempotent user message (client-generated id; retry-safe). Image
+    //    attachments (§7.2) the composer saved ride along: the content
+    //    becomes a parts array and their rows link to this message (the row
+    //    must exist first — attachments.message_id has an FK to messages).
+    let mut user_parts = Vec::with_capacity(1 + args.attachment_ids.len());
+    user_parts.push(ContentPart::Text {
+        text: args.content.clone(),
+    });
+    let mut linked = Vec::with_capacity(args.attachment_ids.len());
+    for att_id in &args.attachment_ids {
+        let att = state
+            .db
+            .get_attachment(att_id.clone())
+            .await?
+            .ok_or_else(|| CmdError::new("attachment", format!("unknown attachment {att_id}")))?;
+        linked.push(att.id.clone());
+        user_parts.push(ContentPart::Image {
+            attachment_id: att.id,
+            mime: att.mime,
+            data_base64: None,
+            processed_path: None,
+        });
+    }
     state
         .db
         .insert_user_message(
             args.user_message_id.clone(),
             conv_id.clone(),
-            vec![ContentPart::Text {
-                text: args.content.clone(),
-            }],
+            user_parts,
             now,
         )
         .await?;
+    for att_id in linked {
+        state
+            .db
+            .link_attachment(att_id, args.user_message_id.clone())
+            .await?;
+    }
 
     // 3. Assistant placeholder — a crash mid-stream leaves a visible stub.
     //    The model id is provisional; routing corrects it below.
@@ -267,6 +342,9 @@ async fn stream_once(
         // The provider API wants the bare model name; the reference's
         // endpoint dimension selects the adapter (§5.1).
         let (_, bare_model) = crate::providers::parse_model_ref(&routed.model);
+        // Image parts carry paths in storage (§7.2.3); fill their bodies
+        // from disk before every hop (user images + tool-produced images).
+        hydrate_image_parts(state, &mut messages).await;
         let req = ChatRequest {
             endpoint_id: routed.endpoint_id.clone(),
             model: bare_model,
@@ -386,6 +464,7 @@ async fn stream_once(
                     attachment_id: img.id.clone(),
                     mime: img.mime.clone(),
                     data_base64: None,
+                    processed_path: None,
                 });
                 if let Err(e) = state.db.insert_attachment(att).await {
                     log::warn!("tool attachment row failed: {e}");
@@ -1409,6 +1488,7 @@ mod tests {
             user_message_id: id.into(),
             content: content.into(),
             model: "fallback-model".into(),
+            attachment_ids: Vec::new(),
         }
     }
 
@@ -2238,12 +2318,15 @@ mod tests {
         };
         assert_eq!(parts.len(), 2, "text envelope + image part");
         assert!(matches!(&parts[0], crate::types::ContentPart::Text { text } if text.contains("[image file attached")));
-        let crate::types::ContentPart::Image { attachment_id, mime, data_base64 } = &parts[1]
+        let crate::types::ContentPart::Image { attachment_id, mime, data_base64, processed_path } = &parts[1]
         else {
             panic!("expected an image part")
         };
         assert_eq!(mime, "image/png");
-        assert!(data_base64.is_none(), "bodies stay on disk (§7.2.3)");
+        // The provider request hydrates bodies from disk (§7.2.4); storage
+        // stays path-only (§7.2.3), asserted via the row below.
+        assert!(data_base64.is_some(), "hop request carries the image body");
+        assert!(processed_path.is_some());
 
         // The attachment row is persisted and linked to the assistant turn.
         let att = state.db.get_attachment(attachment_id.clone()).await.unwrap().unwrap();
@@ -2256,6 +2339,91 @@ mod tests {
         // Both copies exist on disk under the state's attachments dir.
         assert!(std::path::Path::new(&att.path).exists());
         assert!(std::path::Path::new(&att.processed_path).exists());
+    }
+
+    #[tokio::test]
+    async fn user_attachments_link_and_hydrate() {
+        // §7.1/§7.2.4: composer-saved attachments are linked to the user
+        // message and their processed bytes ride the provider request.
+        let provider = FakeProvider::scripted_sequence(vec![main_stream("got it", 3)]);
+        let received = provider.received.clone();
+        let (_dir, state) = app_with(provider);
+        create_conv(&state).await;
+
+        let raw = crate::img::tests::make_png(64, 32);
+        let stored = crate::img::store(&state.attachments_dir, &raw).unwrap();
+        let att = crate::types::Attachment {
+            id: stored.id.clone(),
+            message_id: None,
+            kind: "image".into(),
+            path: stored.path.clone(),
+            processed_path: stored.processed_path.clone(),
+            mime: stored.mime.clone(),
+            width: stored.width,
+            height: stored.height,
+            bytes: stored.bytes,
+            sha256: stored.sha256.clone(),
+            created_at: ids::now_ms(),
+        };
+        state.db.insert_attachment(att.clone()).await.unwrap();
+
+        let mut send_args = args("what is in this picture?");
+        send_args.attachment_ids = vec![stored.id.clone()];
+        chat_send_inner(&state, send_args).await.unwrap();
+
+        // Persisted user message: Text + Image parts; the row is linked.
+        let msgs = messages(&state).await;
+        assert_eq!(msgs[0].role, ChatRole::User);
+        assert_eq!(msgs[0].content.len(), 2);
+        assert!(matches!(&msgs[0].content[0], ContentPart::Text { text } if text == "what is in this picture?"));
+        let linked = state.db.get_attachment(stored.id.clone()).await.unwrap().unwrap();
+        assert_eq!(linked.message_id.as_deref(), Some(msgs[0].id.as_str()));
+
+        // The provider request hydrates the image body from disk.
+        let reqs = received.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        assert_eq!(reqs.len(), 1);
+        let user_req = reqs[0]
+            .messages
+            .iter()
+            .find(|m| m.role == ChatRole::User)
+            .unwrap();
+        let ChatContent::Parts(parts) = &user_req.content else {
+            panic!("user message must be parts, got {:?}", user_req.content)
+        };
+        assert_eq!(parts.len(), 2);
+        let crate::types::ContentPart::Image { attachment_id, mime, data_base64, processed_path } = &parts[1]
+        else {
+            panic!("expected an image part")
+        };
+        assert_eq!(attachment_id, &stored.id);
+        assert_eq!(mime, "image/png");
+        assert!(processed_path.is_some());
+        assert!(data_base64.is_some(), "processed bytes on the wire");
+
+        // Storage itself stays path-only: the persisted content has no body.
+        let stored_parts = serde_json::to_string(&msgs[0].content).unwrap();
+        assert!(!stored_parts.contains("dataBase64"), "{stored_parts}");
+        assert!(stored_parts.contains("processedPath"), "{stored_parts}");
+    }
+
+    #[tokio::test]
+    async fn unknown_attachment_ids_fail_the_send() {
+        let provider = FakeProvider::scripted_sequence(vec![main_stream("unused", 3)]);
+        let received = provider.received.clone();
+        let (_dir, state) = app_with(provider);
+        create_conv(&state).await;
+
+        let mut send_args = args("hi");
+        send_args.attachment_ids = vec!["att_missing".into()];
+        let err = chat_send_inner(&state, send_args).await.unwrap_err();
+        assert_eq!(err.code, "attachment");
+
+        // Nothing was sent to the provider and nothing persisted: the send
+        // failed before the user row (parts are built first).
+        let reqs = received.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        assert!(reqs.is_empty());
+        let msgs = messages(&state).await;
+        assert!(msgs.is_empty(), "no rows on a failed attachment link");
     }
 
     #[tokio::test]
