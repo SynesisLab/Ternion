@@ -146,3 +146,55 @@ export function setToolPermission(
 export function clearSessionPermissions(): Promise<void> {
   return invoke("clear_session_permissions");
 }
+
+// -- Endpoint profiles (§5.1, M3) --------------------------------------------
+
+export interface EndpointProfile {
+  id: string;
+  /** "ollama" | "openai" (OpenAI-compatible). */
+  kind: string;
+  name: string;
+  baseUrl: string;
+  apiKeyRef: string | null;
+  headers: Record<string, string>;
+  enabled: boolean;
+  notes: string | null;
+}
+
+export interface EndpointTestResult {
+  ok: boolean;
+  latencyMs: number;
+  modelCount: number;
+  models: string[];
+  error: string | null;
+}
+
+export function listEndpointProfiles(): Promise<EndpointProfile[]> {
+  return invoke<EndpointProfile[]>("list_endpoint_profiles");
+}
+
+export function saveEndpointProfile(
+  profile: EndpointProfile,
+): Promise<EndpointProfile> {
+  return invoke<EndpointProfile>("save_endpoint_profile", { profile });
+}
+
+export function deleteEndpointProfile(id: string): Promise<void> {
+  return invoke("delete_endpoint_profile", { id });
+}
+
+export function setEndpointApiKey(id: string, secret: string): Promise<void> {
+  return invoke("set_endpoint_api_key", { id, secret });
+}
+
+export function clearEndpointApiKey(id: string): Promise<void> {
+  return invoke("clear_endpoint_api_key", { id });
+}
+
+export function testEndpoint(args: {
+  kind: string;
+  baseUrl: string;
+  endpointId?: string | null;
+}): Promise<EndpointTestResult> {
+  return invoke<EndpointTestResult>("test_endpoint", { args });
+}

@@ -61,6 +61,12 @@ pub fn run() {
             commands::list_tool_permissions,
             commands::set_tool_permission,
             commands::clear_session_permissions,
+            commands::list_endpoint_profiles,
+            commands::save_endpoint_profile,
+            commands::delete_endpoint_profile,
+            commands::set_endpoint_api_key,
+            commands::clear_endpoint_api_key,
+            commands::test_endpoint,
         ])
         .setup(|app| {
             use tauri::Manager;

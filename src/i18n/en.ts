@@ -85,8 +85,26 @@ export const en = {
   "routerlog.estOut": "est. out",
 
   "settings.tab.general": "General",
+  "settings.tab.endpoints": "Endpoints",
   "settings.tab.triad": "Triad",
   "settings.tab.permissions": "Permissions",
+
+  // Endpoint profiles (M3, §5.1)
+  "settings.endpoints.title": "Endpoint profiles",
+  "settings.endpoints.builtin": "built-in",
+  "settings.endpoints.add": "Add endpoint",
+  "settings.endpoints.kind": "Type",
+  "settings.endpoints.kindOpenai": "OpenAI-compatible",
+  "settings.endpoints.kindOllama": "Ollama (native)",
+  "settings.endpoints.name": "Name",
+  "settings.endpoints.apiKey": "API key (stored in Credential Manager)",
+  "settings.endpoints.apiKeySet": "API key saved",
+  "settings.endpoints.apiKeyNone": "No API key",
+  "settings.endpoints.setKey": "Save key",
+  "settings.endpoints.clearKey": "Clear API key",
+  "settings.endpoints.test": "Test",
+  "settings.endpoints.testing": "…",
+  "settings.endpoints.models": "models",
   "settings.triad.enabled": "Enable Triad routing",
   "settings.triad.enabledHint":
     "Herald classifies each message and picks Scout or Titan.",

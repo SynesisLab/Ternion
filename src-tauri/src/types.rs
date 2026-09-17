@@ -322,6 +322,40 @@ pub struct ModelInfo {
     pub capabilities: Vec<String>,
 }
 
+/// User-managed endpoint profile (design §5.1). The built-in local Ollama
+/// (`ep_local_ollama`, from the `ollama.base_url` setting) is synthesized, not
+/// a table row. `api_key_ref` is a keyring handle — the secret is read from
+/// Windows Credential Manager only at request time (§10.1).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EndpointProfile {
+    pub id: String,
+    /// "ollama" | "openai" (OpenAI-compatible)
+    pub kind: String,
+    pub name: String,
+    pub base_url: String,
+    pub api_key_ref: Option<String>,
+    /// Extra request headers (proxies, org routing) — §5.1.
+    #[serde(default)]
+    pub headers: std::collections::HashMap<String, String>,
+    pub enabled: bool,
+    pub notes: Option<String>,
+}
+
+/// Result of a connection test (design §5.1: "latency + model count surfaced
+/// in UI"). Unreachable endpoints come back as `ok: false` + `error` so the
+/// settings dialog shows them inline instead of an IPC error.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EndpointTestResult {
+    pub ok: bool,
+    pub latency_ms: u64,
+    pub model_count: usize,
+    /// First few model ids, for a quick eyeball check.
+    pub models: Vec<String>,
+    pub error: Option<String>,
+}
+
 /// Result of a finished `chat_send` invocation.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

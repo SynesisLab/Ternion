@@ -211,7 +211,7 @@ struct TagDetails {
     quantization_level: Option<String>,
 }
 
-fn parse_tags(value: &serde_json::Value) -> Result<Vec<ModelInfo>, String> {
+pub(crate) fn parse_tags(value: &serde_json::Value) -> Result<Vec<ModelInfo>, String> {
     let resp: TagsResponse =
         serde_json::from_value(value.clone()).map_err(|e| format!("api/tags: {e}"))?;
     Ok(resp

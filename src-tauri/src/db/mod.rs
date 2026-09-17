@@ -16,8 +16,8 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 use crate::{
     error::CmdError,
     types::{
-        ChatRole, ContentPart, Conversation, Message, MessageRouting, MessageStatus, ModelRole,
-        RoutingDecision, RoutingEvent, Target, ToolCallRow,
+        ChatRole, ContentPart, Conversation, EndpointProfile, Message, MessageRouting,
+        MessageStatus, ModelRole, RoutingDecision, RoutingEvent, Target, ToolCallRow,
     },
     ids,
 };
@@ -90,6 +90,85 @@ impl Database {
                 params![key, value],
             )
             .map(|_| ())
+        })
+        .await
+    }
+
+    // -- endpoint profiles (M3, design §5.1) --------------------------------
+
+    /// User profiles, oldest first (the synthesized built-in is prepended by
+    /// the command layer).
+    pub async fn list_endpoint_profiles(&self) -> Result<Vec<EndpointProfile>, CmdError> {
+        self.run(|c| {
+            let mut stmt = c.prepare(
+                "SELECT id, kind, name, base_url, api_key_ref, headers, enabled, notes
+                 FROM endpoint_profiles ORDER BY created_at, rowid",
+            )?;
+            let rows = stmt.query_map([], |r| row_to_profile(r))?;
+            rows.collect()
+        })
+        .await
+    }
+
+    pub async fn get_endpoint_profile(
+        &self,
+        id: String,
+    ) -> Result<Option<EndpointProfile>, CmdError> {
+        self.run(move |c| {
+            let profile = c
+                .query_row(
+                    "SELECT id, kind, name, base_url, api_key_ref, headers, enabled, notes
+                     FROM endpoint_profiles WHERE id = ?1",
+                    params![id],
+                    |r| row_to_profile(r),
+                )
+                .optional()?;
+            Ok(profile)
+        })
+        .await
+    }
+
+    /// Upsert on `id`; the command layer owns validation and timestamps.
+    pub async fn upsert_endpoint_profile(
+        &self,
+        profile: EndpointProfile,
+        now: i64,
+    ) -> Result<(), CmdError> {
+        let headers = serde_json::to_string(&profile.headers)
+            .map_err(|e| CmdError::internal(format!("serialize headers: {e}")))?;
+        self.run(move |c| {
+            c.execute(
+                "INSERT INTO endpoint_profiles
+                    (id, kind, name, base_url, api_key_ref, headers, enabled, notes,
+                     created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
+                 ON CONFLICT(id) DO UPDATE SET
+                    kind = excluded.kind, name = excluded.name,
+                    base_url = excluded.base_url, api_key_ref = excluded.api_key_ref,
+                    headers = excluded.headers, enabled = excluded.enabled,
+                    notes = excluded.notes, updated_at = excluded.updated_at",
+                params![
+                    profile.id,
+                    profile.kind,
+                    profile.name,
+                    profile.base_url,
+                    profile.api_key_ref,
+                    headers,
+                    profile.enabled as i64,
+                    profile.notes,
+                    now,
+                ],
+            )
+            .map(|_| ())
+        })
+        .await
+    }
+
+    pub async fn delete_endpoint_profile(&self, id: String) -> Result<bool, CmdError> {
+        self.run(move |c| {
+            let changed = c
+                .execute("DELETE FROM endpoint_profiles WHERE id = ?1", params![id])?;
+            Ok(changed > 0)
         })
         .await
     }
@@ -652,6 +731,24 @@ fn parse_parts(json: &str) -> Vec<ContentPart> {
     })
 }
 
+/// `headers` may be NULL (column added with the table but rows can be written
+/// with no extra headers) and is a JSON object when present.
+fn row_to_profile(row: &Row) -> rusqlite::Result<EndpointProfile> {
+    let headers_json: Option<String> = row.get("headers")?;
+    Ok(EndpointProfile {
+        id: row.get("id")?,
+        kind: row.get("kind")?,
+        name: row.get("name")?,
+        base_url: row.get("base_url")?,
+        api_key_ref: row.get("api_key_ref")?,
+        headers: headers_json
+            .and_then(|json| serde_json::from_str(&json).ok())
+            .unwrap_or_default(),
+        enabled: row.get::<_, i64>("enabled")? != 0,
+        notes: row.get("notes")?,
+    })
+}
+
 fn row_to_conversation(row: &Row) -> rusqlite::Result<Conversation> {
     // workspace_roots may be NULL on rows created before any workspace binding.
     let roots_json: Option<String> = row.get("workspace_roots")?;
@@ -1105,5 +1202,61 @@ mod tests {
 
         let listed = db.list_conversations().await.unwrap();
         assert_eq!(listed[0].digest.as_deref(), Some("task: migrate auth"));
+    }
+
+    /// Endpoint profiles (§5.1): full-field round-trip through upsert/get,
+    /// oldest-first listing, and delete reporting.
+    #[tokio::test]
+    async fn endpoint_profiles_roundtrip() {
+        let (_dir, db) = temp_db().await;
+
+        let mut headers = std::collections::HashMap::new();
+        headers.insert("X-Org".to_string(), "acme".to_string());
+        let profile = EndpointProfile {
+            id: "ep_1".into(),
+            kind: "openai".into(),
+            name: "Homelab LM Studio".into(),
+            base_url: "http://192.168.1.20:1234".into(),
+            api_key_ref: Some("endpoint.ep_1".into()),
+            headers: headers.clone(),
+            enabled: true,
+            notes: Some("RTX 4090".into()),
+        };
+        db.upsert_endpoint_profile(profile.clone(), 1000).await.unwrap();
+
+        let got = db.get_endpoint_profile("ep_1".into()).await.unwrap().unwrap();
+        assert_eq!(got, profile);
+        assert!(db.get_endpoint_profile("missing".into()).await.unwrap().is_none());
+
+        // Second profile; list is oldest-first by creation.
+        let second = EndpointProfile {
+            id: "ep_2".into(),
+            kind: "ollama".into(),
+            name: "LAN Ollama".into(),
+            base_url: "http://192.168.1.30:11434".into(),
+            api_key_ref: None,
+            headers: Default::default(),
+            enabled: false,
+            notes: None,
+        };
+        db.upsert_endpoint_profile(second.clone(), 1001).await.unwrap();
+        let listed = db.list_endpoint_profiles().await.unwrap();
+        assert_eq!(listed, vec![profile, second]);
+
+        // Updating the same id keeps one row (and preserves created order).
+        let mut updated = db.get_endpoint_profile("ep_1".into()).await.unwrap().unwrap();
+        updated.name = "Renamed".into();
+        updated.enabled = false;
+        db.upsert_endpoint_profile(updated, 1002).await.unwrap();
+        let listed = db.list_endpoint_profiles().await.unwrap();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].name, "Renamed");
+        assert!(!listed[0].enabled);
+        assert_eq!(listed[0].headers.get("X-Org").map(String::as_str), Some("acme"));
+
+        // Delete reports existence; a second delete is a no-op.
+        assert!(db.delete_endpoint_profile("ep_1".into()).await.unwrap());
+        assert!(!db.delete_endpoint_profile("ep_1".into()).await.unwrap());
+        assert_eq!(db.list_endpoint_profiles().await.unwrap().len(), 1);
     }
 }

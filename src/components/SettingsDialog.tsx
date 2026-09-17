@@ -1,12 +1,20 @@
 import { useEffect, useState } from "react";
 
 import {
+  clearEndpointApiKey,
   clearSessionPermissions,
+  deleteEndpointProfile,
   getSetting,
+  listEndpointProfiles,
   listModels,
   listToolPermissions,
+  saveEndpointProfile,
+  setEndpointApiKey,
   setSetting,
   setToolPermission,
+  testEndpoint,
+  type EndpointProfile,
+  type EndpointTestResult,
   type ToolPermissionRow,
 } from "../lib/ipc";
 import { settingsKeys } from "../lib/settingsKeys";
@@ -27,7 +35,7 @@ const DEFAULT_HANDOFF_RECENT = "6";
 const DEFAULT_HERALD_TIMEOUT = "8000";
 
 type TestState = "idle" | "testing" | "ok" | "fail";
-type Tab = "general" | "triad" | "permissions";
+type Tab = "general" | "endpoints" | "triad" | "permissions";
 
 export function SettingsDialog({
   open,
@@ -70,11 +78,17 @@ export function SettingsDialog({
   // -- permissions (§6.6) ---------------------------------------------------
   const [grants, setGrants] = useState<ToolPermissionRow[]>([]);
 
+  // -- endpoints (§5.1) -----------------------------------------------------
+  const [profiles, setProfiles] = useState<EndpointProfile[]>([]);
+
   useEffect(() => {
     if (!open) return;
     void listToolPermissions()
       .then(setGrants)
       .catch(() => setGrants([]));
+    void listEndpointProfiles()
+      .then(setProfiles)
+      .catch(() => setProfiles([]));
     void (async () => {
       const [url, temp, ctx, ka, tray, shell] = await Promise.all([
         getSetting(settingsKeys.ollamaBaseUrl),
@@ -209,6 +223,9 @@ export function SettingsDialog({
             <TabButton active={tab === "general"} onClick={() => setTab("general")}>
               {t("settings.tab.general")}
             </TabButton>
+            <TabButton active={tab === "endpoints"} onClick={() => setTab("endpoints")}>
+              {t("settings.tab.endpoints")}
+            </TabButton>
             <TabButton active={tab === "triad"} onClick={() => setTab("triad")}>
               {t("settings.tab.triad")}
             </TabButton>
@@ -315,6 +332,13 @@ export function SettingsDialog({
               </span>
             </label>
           </div>
+        ) : tab === "endpoints" ? (
+          <EndpointsTab
+            profiles={profiles}
+            onReload={async () => {
+              setProfiles(await listEndpointProfiles().catch(() => []));
+            }}
+          />
         ) : tab === "triad" ? (
           <div className="space-y-4">
             <label className="block">
@@ -549,6 +573,274 @@ function TabButton({
     >
       {children}
     </button>
+  );
+}
+
+/** Endpoint profiles (§5.1): CRUD + connection test. Changes persist
+ * immediately — the bottom Save bar only covers the settings keys. */
+function EndpointsTab({
+  profiles,
+  onReload,
+}: {
+  profiles: EndpointProfile[];
+  onReload: () => Promise<void>;
+}) {
+  const [addOpen, setAddOpen] = useState(false);
+  const [newKind, setNewKind] = useState("openai");
+  const [newName, setNewName] = useState("");
+  const [newBaseUrl, setNewBaseUrl] = useState("");
+  const [newApiKey, setNewApiKey] = useState("");
+  const [testResults, setTestResults] = useState<Record<string, EndpointTestResult>>({});
+  const [testing, setTesting] = useState<Record<string, boolean>>({});
+  const [keyDraft, setKeyDraft] = useState<Record<string, string>>({});
+
+  const runTest = (p: EndpointProfile) => {
+    setTesting((s) => ({ ...s, [p.id]: true }));
+    void testEndpoint({ kind: p.kind, baseUrl: p.baseUrl, endpointId: p.id })
+      .then((result) => setTestResults((s) => ({ ...s, [p.id]: result })))
+      .catch(
+        () =>
+          setTestResults((s) => ({
+            ...s,
+            [p.id]: { ok: false, latencyMs: 0, modelCount: 0, models: [], error: "unreachable" },
+          })),
+      )
+      .finally(() => setTesting((s) => ({ ...s, [p.id]: false })));
+  };
+
+  const addProfile = async () => {
+    const saved = await saveEndpointProfile({
+      id: "",
+      kind: newKind,
+      name: newName.trim(),
+      baseUrl: newBaseUrl.trim(),
+      apiKeyRef: null,
+      headers: {},
+      enabled: true,
+      notes: null,
+    }).catch(() => null);
+    if (saved && newApiKey.trim()) {
+      await setEndpointApiKey(saved.id, newApiKey.trim()).catch(() => {});
+    }
+    setNewName("");
+    setNewBaseUrl("");
+    setNewApiKey("");
+    setAddOpen(false);
+    await onReload();
+  };
+
+  const toggleEnabled = async (p: EndpointProfile) => {
+    await saveEndpointProfile({ ...p, enabled: !p.enabled }).catch(() => {});
+    await onReload();
+  };
+
+  const applyKey = async (p: EndpointProfile) => {
+    const secret = keyDraft[p.id]?.trim();
+    if (secret) {
+      await setEndpointApiKey(p.id, secret).catch(() => {});
+    }
+    setKeyDraft((s) => ({ ...s, [p.id]: "" }));
+    await onReload();
+  };
+
+  const dropProfile = async (p: EndpointProfile) => {
+    await deleteEndpointProfile(p.id).catch(() => {});
+    await onReload();
+  };
+
+  const BUILTIN = "ep_local_ollama";
+
+  return (
+    <div className="space-y-3">
+      <div className="text-xs font-medium text-[color:var(--color-muted)]">
+        {t("settings.endpoints.title")}
+      </div>
+
+      <div className="divide-y divide-[color:var(--color-edge)] rounded-lg border border-[color:var(--color-edge)]">
+        {profiles.map((p) => {
+          const result = testResults[p.id];
+          const busy = testing[p.id];
+          return (
+            <div key={p.id} className="space-y-1.5 px-3 py-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 text-sm text-[color:var(--color-ink)]">
+                    <span className="truncate">{p.name}</span>
+                    <span className="rounded bg-[color:var(--color-bg)] px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-[color:var(--color-muted)]">
+                      {p.kind === "openai" ? "OpenAI" : "Ollama"}
+                    </span>
+                    {p.id === BUILTIN && (
+                      <span className="rounded bg-[color:var(--color-bg)] px-1.5 py-0.5 text-[10px] text-[color:var(--color-accent-2)]">
+                        {t("settings.endpoints.builtin")}
+                      </span>
+                    )}
+                  </div>
+                  <div className="truncate font-mono text-xs text-[color:var(--color-muted)]">
+                    {p.baseUrl}
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  {!p.apiKeyRef && p.id !== BUILTIN && (
+                    <span className="text-[10px] text-[color:var(--color-muted)]">
+                      {t("settings.endpoints.apiKeyNone")}
+                    </span>
+                  )}
+                  {p.apiKeyRef && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void clearEndpointApiKey(p.id).then(() => onReload());
+                      }}
+                      title={t("settings.endpoints.clearKey")}
+                      className="rounded bg-[color:var(--color-bg)] px-1.5 py-0.5 text-[10px] text-[color:var(--color-accent-2)] hover:opacity-80"
+                    >
+                      {t("settings.endpoints.apiKeySet")}
+                    </button>
+                  )}
+                  {p.id !== BUILTIN && (
+                    <button
+                      type="button"
+                      onClick={() => void toggleEnabled(p)}
+                      className={`rounded px-1.5 py-0.5 text-[10px] ${
+                        p.enabled
+                          ? "text-[color:var(--color-accent-2)]"
+                          : "text-[color:var(--color-muted)]"
+                      }`}
+                    >
+                      {p.enabled ? "●" : "○"}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => void runTest(p)}
+                    className="rounded-lg border border-[color:var(--color-edge)] px-2 py-1 text-xs text-[color:var(--color-ink)] hover:border-[color:var(--color-accent)]"
+                  >
+                    {busy ? t("settings.endpoints.testing") : t("settings.endpoints.test")}
+                  </button>
+                  {p.id !== BUILTIN && (
+                    <button
+                      type="button"
+                      onClick={() => void dropProfile(p)}
+                      className="rounded-lg border border-[color:var(--color-edge)] px-2 py-1 text-xs text-[color:var(--color-muted)] hover:text-[color:var(--color-danger)]"
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* API key entry (stored in Credential Manager, §10.1) */}
+              {p.kind === "openai" && (
+                <div className="flex items-center gap-2">
+                  <input
+                    type="password"
+                    value={keyDraft[p.id] ?? ""}
+                    onChange={(e) => setKeyDraft((s) => ({ ...s, [p.id]: e.target.value }))}
+                    placeholder={t("settings.endpoints.apiKey")}
+                    className="min-w-0 flex-1 rounded-lg border border-[color:var(--color-edge)] bg-[color:var(--color-bg)] px-2 py-1 text-xs outline-none focus:border-[color:var(--color-accent)]"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void applyKey(p)}
+                    className="shrink-0 rounded-lg border border-[color:var(--color-edge)] px-2 py-1 text-xs text-[color:var(--color-muted)] hover:text-[color:var(--color-ink)]"
+                  >
+                    {t("settings.endpoints.setKey")}
+                  </button>
+                </div>
+              )}
+
+              {/* Test outcome + latency/model count (§5.1) */}
+              <div className="min-h-4 text-xs">
+                {result?.ok && (
+                  <span className="text-[color:var(--color-accent-2)]">
+                    ✓ {result.modelCount} {t("settings.endpoints.models")} ·{" "}
+                    {result.latencyMs} ms
+                  </span>
+                )}
+                {result && !result.ok && (
+                  <span className="break-all text-[color:var(--color-danger)]">
+                    ✕ {result.error}
+                  </span>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {addOpen ? (
+        <div className="space-y-2 rounded-lg border border-[color:var(--color-edge)] p-3">
+          <div className="grid grid-cols-2 gap-2">
+            <label className="block">
+              <span className="mb-1 block text-[11px] font-medium text-[color:var(--color-muted)]">
+                {t("settings.endpoints.kind")}
+              </span>
+              <select
+                value={newKind}
+                onChange={(e) => setNewKind(e.target.value)}
+                className="w-full rounded-lg border border-[color:var(--color-edge)] bg-[color:var(--color-bg)] px-2 py-1.5 text-sm outline-none focus:border-[color:var(--color-accent)]"
+              >
+                <option value="openai">{t("settings.endpoints.kindOpenai")}</option>
+                <option value="ollama">{t("settings.endpoints.kindOllama")}</option>
+              </select>
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-[11px] font-medium text-[color:var(--color-muted)]">
+                {t("settings.endpoints.name")}
+              </span>
+              <input
+                type="text"
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                placeholder="Homelab LM Studio"
+                className="w-full rounded-lg border border-[color:var(--color-edge)] bg-[color:var(--color-bg)] px-2.5 py-1.5 text-sm outline-none focus:border-[color:var(--color-accent)]"
+              />
+            </label>
+          </div>
+          <input
+            type="text"
+            value={newBaseUrl}
+            onChange={(e) => setNewBaseUrl(e.target.value)}
+            placeholder={newKind === "openai" ? "http://192.168.1.20:1234/v1" : "http://192.168.1.30:11434"}
+            className="w-full rounded-lg border border-[color:var(--color-edge)] bg-[color:var(--color-bg)] px-2.5 py-1.5 font-mono text-sm outline-none focus:border-[color:var(--color-accent)]"
+          />
+          {newKind === "openai" && (
+            <input
+              type="password"
+              value={newApiKey}
+              onChange={(e) => setNewApiKey(e.target.value)}
+              placeholder={t("settings.endpoints.apiKey")}
+              className="w-full rounded-lg border border-[color:var(--color-edge)] bg-[color:var(--color-bg)] px-2.5 py-1.5 text-sm outline-none focus:border-[color:var(--color-accent)]"
+            />
+          )}
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setAddOpen(false)}
+              className="rounded-lg border border-[color:var(--color-edge)] px-3 py-1.5 text-xs text-[color:var(--color-muted)] hover:text-[color:var(--color-ink)]"
+            >
+              {t("settings.close")}
+            </button>
+            <button
+              type="button"
+              onClick={() => void addProfile()}
+              disabled={!newName.trim() || !newBaseUrl.trim()}
+              className="rounded-lg bg-[color:var(--color-accent)] px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-40"
+            >
+              {t("settings.endpoints.add")}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setAddOpen(true)}
+          className="rounded-lg border border-dashed border-[color:var(--color-edge)] px-3 py-1.5 text-xs text-[color:var(--color-muted)] hover:border-[color:var(--color-accent)] hover:text-[color:var(--color-ink)]"
+        >
+          + {t("settings.endpoints.add")}
+        </button>
+      )}
+    </div>
   );
 }
 

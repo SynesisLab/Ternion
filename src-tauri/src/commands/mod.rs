@@ -6,12 +6,14 @@
 
 pub mod chat;
 pub mod conversations;
+pub mod endpoints;
 pub mod models;
 pub mod permissions;
 pub mod settings;
 
 pub use chat::*;
 pub use conversations::*;
+pub use endpoints::*;
 pub use models::*;
 pub use permissions::*;
 pub use settings::*;

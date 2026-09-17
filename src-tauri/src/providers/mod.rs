@@ -4,6 +4,8 @@
 
 pub mod ndjson;
 pub mod ollama;
+pub mod probe;
+pub mod secrets;
 #[cfg(test)]
 pub mod test_support;
 
