@@ -150,6 +150,7 @@ fn heuristic_decision(ctx: &RouteContext) -> RoutingDecision {
         est_out_tokens: 0,
         handoff_note: String::new(),
         source: DecisionSource::Heuristic,
+        vision_gap: None,
     }
 }
 
@@ -176,6 +177,7 @@ mod tests {
             est_out_tokens: 0,
             handoff_note: "note".into(),
             source: DecisionSource::Herald,
+            vision_gap: None,
         }
     }
 

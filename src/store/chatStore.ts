@@ -99,6 +99,9 @@ interface ChatStore {
   escalation: Record<string, boolean>;
   /** Follow-up chips from the Herald sidecar (§3.7), per conversation. */
   suggestions: Record<string, string[]>;
+  /** §7.6 vision gap on the last routed turn (suggested model, "" = none
+   * known); null once cleared. */
+  visionGap: Record<string, string | null>;
   /** Mutating tools awaiting a decision (§6.6), oldest first. */
   approvals: ApprovalRequestView[];
 
@@ -142,6 +145,7 @@ export const useChatStore = create<ChatStore>()((set, get) => ({
   streaming: {},
   escalation: {},
   suggestions: {},
+  visionGap: {},
   approvals: [],
 
   initError: null,
@@ -220,7 +224,7 @@ export const useChatStore = create<ChatStore>()((set, get) => ({
       ...(pinned && !isRolePin(pinned) ? { model: pinned } : {}),
     });
     // Clear per-chat overlays from the previous conversation.
-    set({ escalation: {}, suggestions: {} });
+    set({ escalation: {}, suggestions: {}, visionGap: {} });
   },
 
   async newConversation() {
@@ -395,6 +399,7 @@ export const useChatStore = create<ChatStore>()((set, get) => ({
       // One-shot overlays are void the moment a new exchange starts.
       escalation: { ...s.escalation, [convId]: false },
       suggestions: { ...s.suggestions, [convId]: [] },
+      visionGap: { ...s.visionGap, [convId]: null },
     }));
 
     try {
@@ -519,6 +524,12 @@ export const useChatStore = create<ChatStore>()((set, get) => ({
               ...(s.drafts[conversationId] ?? emptyDraft()),
               routing: { decision: ev.decision, finalTarget: ev.finalTarget },
             },
+          },
+          // §7.6: images this turn but the routed model can't see them —
+          // surface the warning chip (one-shot, cleared by the next send).
+          visionGap: {
+            ...s.visionGap,
+            [conversationId]: ev.decision.visionGap ?? null,
           },
         }));
         break;

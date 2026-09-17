@@ -343,6 +343,7 @@ pub fn parse_herald_json(raw: &str) -> Result<RoutingDecision, HeraldError> {
         est_out_tokens: out.est_out_tokens.unwrap_or(0) as u32,
         handoff_note: out.handoff_note.unwrap_or_default(),
         source: DecisionSource::Herald,
+        vision_gap: None,
     })
 }
 

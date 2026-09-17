@@ -74,6 +74,12 @@ pub struct RoutingDecision {
     pub est_out_tokens: u32,
     pub handoff_note: String,
     pub source: DecisionSource,
+    /// §7.6 vision gap: this turn carries images but the routed model can't
+    /// see them. `None` = no gap; `Some("")` = gap, no known alternative;
+    /// `Some(ref)` = suggested vision-capable model (one-click fix). Pinned
+    /// chats are never overridden silently — the UI suggests instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vision_gap: Option<String>,
 }
 
 impl Default for RoutingDecision {
@@ -88,6 +94,7 @@ impl Default for RoutingDecision {
             est_out_tokens: 0,
             handoff_note: String::new(),
             source: DecisionSource::Heuristic,
+            vision_gap: None,
         }
     }
 }
@@ -474,6 +481,7 @@ mod tests {
                     est_out_tokens: 0,
                     handoff_note: String::new(),
                     source: DecisionSource::Herald,
+                    vision_gap: None,
                 },
                 final_target: Target::Scout,
             }, "routing"),
@@ -544,6 +552,7 @@ mod tests {
                 est_out_tokens: 2000,
                 handoff_note: "refactor auth".into(),
                 source: DecisionSource::Herald,
+                vision_gap: None,
             },
             final_target: Target::Titan,
         }).unwrap();

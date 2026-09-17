@@ -35,6 +35,10 @@ export interface RoutingDecision {
   estOutTokens: number;
   handoffNote: string;
   source: DecisionSource;
+  /** §7.6 vision gap: images this turn, model can't see them. Absent/null
+   * = no gap; "" = gap with no known alternative; otherwise the suggested
+   * vision-capable model reference. */
+  visionGap?: string | null;
 }
 
 export type StreamEvent =

@@ -44,6 +44,9 @@ export default function App() {
   const suggestions = useChatStore(
     (s) => (activeId ? (s.suggestions[activeId] ?? EMPTY_SUGGESTIONS) : EMPTY_SUGGESTIONS),
   );
+  const visionGap = useChatStore(
+    (s) => (activeId ? (s.visionGap[activeId] ?? null) : null),
+  );
 
   useEffect(() => {
     void init();
@@ -98,6 +101,10 @@ export default function App() {
           onSuggestion={(text) => void sendMessage(text)}
           escalation={escalation}
           onContinueTitan={() => void continueWithTitan()}
+          visionGap={visionGap}
+          onFixVision={() => {
+            if (visionGap) setPin(visionGap);
+          }}
         />
       </div>
       <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />

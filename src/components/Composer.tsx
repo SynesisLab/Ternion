@@ -29,6 +29,8 @@ export function Composer({
   onSuggestion,
   escalation = false,
   onContinueTitan,
+  visionGap = null,
+  onFixVision,
 }: {
   onSend: (text: string, attachments: Attachment[]) => void;
   onStop: () => void;
@@ -42,6 +44,10 @@ export function Composer({
   /** Scout ran past its output ceiling last turn (§3.6). */
   escalation?: boolean;
   onContinueTitan?: () => void;
+  /** §7.6: images this turn but the routed model lacks vision. "" = no
+   * known alternative (warning only); a ref = one-click fix available. */
+  visionGap?: string | null;
+  onFixVision?: () => void;
 }) {
   const [text, setText] = useState("");
   const [pending, setPending] = useState<Attachment[]>([]);
@@ -156,6 +162,20 @@ export function Composer({
                 {s}
               </button>
             ))}
+          </div>
+        )}
+        {visionGap != null && !streaming && (
+          <div className="mb-2 flex items-center gap-3 rounded-xl border border-[color:var(--color-warn)]/30 bg-[color:var(--color-warn)]/10 px-3 py-2 text-xs text-[color:var(--color-ink)]">
+            <span className="flex-1">{t("chat.vision.gap")}</span>
+            {visionGap !== "" && onFixVision && (
+              <button
+                type="button"
+                onClick={onFixVision}
+                className="shrink-0 rounded-lg border border-[color:var(--color-warn)]/40 px-3 py-1.5 font-medium text-[color:var(--color-warn)] hover:bg-[color:var(--color-warn)]/20"
+              >
+                {t("chat.vision.fix")}
+              </button>
+            )}
           </div>
         )}
         {attachError && (

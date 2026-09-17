@@ -1104,7 +1104,7 @@ async fn route_turn(
     let mut keep_alive = state
         .settings
         .get_or(crate::settings::keys::CHAT_KEEP_ALIVE, "10m");
-    let model: String;
+    let mut model: String;
     // Resolved from the routed reference below (§5.1).
     let endpoint_id: String;
 
@@ -1152,7 +1152,10 @@ async fn route_turn(
                 });
 
                 let turns_on_titan = turns_on_titan(history);
-                let mut ctx = herald::route_context_for(&args.content, false);
+                // H1 (§3.5): attachments are a routing signal — H1 fires even
+                // before the model-level enforcement below.
+                let mut ctx =
+                    herald::route_context_for(&args.content, !args.attachment_ids.is_empty());
                 ctx.turns_on_titan = turns_on_titan;
                 // H3 (§3.5): ≥ 2 tool results already in context ⇒ Titan.
                 ctx.prior_tool_results = state
@@ -1222,6 +1225,21 @@ async fn route_turn(
                 keep_alive = role_keep_alive(decision.target, &cfg);
             }
         }
+    }
+
+    // §7.6: images force a vision-capable model — auto turns upgrade, pins
+    // surface a warning chip instead of being overridden. Runs before the
+    // endpoint parse below: the upgrade may move the turn to another
+    // endpoint entirely.
+    if !args.attachment_ids.is_empty() {
+        enforce_vision(
+            state,
+            &cfg,
+            &mut decision,
+            &mut model,
+            &mut role,
+            &mut keep_alive,
+        );
     }
 
     // §5.1: the reference's endpoint dimension selects the adapter — bare
@@ -1311,6 +1329,88 @@ fn apply_capability_facts(state: &AppState, cfg: &TriadConfig, ctx: &mut policy:
         ctx.scout_vision = Some(scout.capabilities.iter().any(|c| c == "vision"));
         ctx.scout_context_tokens = scout.context_length;
     }
+}
+
+/// §7.6 vision routing: an image-carrying turn needs a model with the
+/// `vision` capability. Auto-routed turns upgrade (Titan when Scout is the
+/// current and can't see; otherwise the first vision-capable model in the
+/// registry); explicit pins keep their model — user intent — and surface
+/// `vision_gap` so the UI can show a warning chip with a one-click fix.
+/// Unknown capabilities disable rather than guess (§3.5 rule 2).
+fn enforce_vision(
+    state: &AppState,
+    cfg: &TriadConfig,
+    decision: &mut RoutingDecision,
+    model: &mut String,
+    role: &mut Option<ModelRole>,
+    keep_alive: &mut String,
+) {
+    decision.flags.vision = true;
+    let has_vision = |info: &crate::types::ModelInfo| {
+        info.capabilities.iter().any(|c| c == "vision")
+    };
+    let Some(current) = state.registry_model(model) else {
+        return; // not in the registry — can't judge, don't guess
+    };
+    if has_vision(&current) {
+        return;
+    }
+
+    // Vision-capable alternative, in preference order: the scout role
+    // model, then the titan role model, then anything the registry knows.
+    // Titan-routed turns never de-escalate to scout (the policy engine may
+    // have escalated for context/complexity reasons, §3.5).
+    let capable = |m: &str| state.registry_model(m).filter(has_vision).is_some();
+    let scout_ref = cfg.roles.scout.as_deref();
+    let titan_ref = cfg.roles.titan.as_deref();
+    let upgrade = if decision.target == Target::Titan {
+        state
+            .model_registry
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .find(|m| has_vision(m))
+            .map(|m| m.id.clone())
+    } else {
+        scout_ref
+            .filter(|m| *m != current.id.as_str())
+            .filter(|m| capable(m))
+            .map(|m| m.to_string())
+            .or_else(|| titan_ref.filter(|m| capable(m)).map(|m| m.to_string()))
+            .or_else(|| {
+                state
+                    .model_registry
+                    .read()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .iter()
+                    .find(|m| has_vision(m))
+                    .map(|m| m.id.clone())
+            })
+    };
+
+    if decision.source == DecisionSource::Manual {
+        // A pin is intent: suggest, never override silently.
+        decision.vision_gap = Some(upgrade.unwrap_or_default());
+        return;
+    }
+    let Some(upgraded) = upgrade else {
+        // Nothing vision-capable is known — the turn proceeds text-only;
+        // the chip warns without a one-click fix.
+        decision.vision_gap = Some(String::new());
+        return;
+    };
+    decision.reason = format!("{} lacks vision → {upgraded}", current.id);
+    decision.source = DecisionSource::HardRule;
+    if scout_ref == Some(upgraded.as_str()) {
+        decision.target = Target::Scout;
+        *role = Some(ModelRole::Scout);
+        *keep_alive = cfg.scout_keep_alive.clone();
+    } else if titan_ref == Some(upgraded.as_str()) {
+        decision.target = Target::Titan;
+        *role = Some(ModelRole::Titan);
+        *keep_alive = cfg.titan_keep_alive.clone();
+    }
+    *model = upgraded;
 }
 
 fn role_of(t: Target) -> ModelRole {
@@ -2404,6 +2504,161 @@ mod tests {
         let stored_parts = serde_json::to_string(&msgs[0].content).unwrap();
         assert!(!stored_parts.contains("dataBase64"), "{stored_parts}");
         assert!(stored_parts.contains("processedPath"), "{stored_parts}");
+    }
+
+    fn reg_model(id: &str, endpoint_id: &str, caps: &[&str]) -> crate::types::ModelInfo {
+        crate::types::ModelInfo {
+            id: id.into(),
+            display_name: id.into(),
+            size_bytes: None,
+            parameter_size: None,
+            quantization_level: None,
+            family: None,
+            context_length: Some(8192),
+            capabilities: caps.iter().map(|c| c.to_string()).collect(),
+            endpoint_id: endpoint_id.into(),
+        }
+    }
+
+    /// Seed one attachment row so `attachment_ids` has something to link.
+    async fn seed_attachment(state: &AppState) -> String {
+        let raw = crate::img::tests::make_png(64, 32);
+        let stored = crate::img::store(&state.attachments_dir, &raw).unwrap();
+        let att = crate::types::Attachment {
+            id: stored.id.clone(),
+            message_id: None,
+            kind: "image".into(),
+            path: stored.path.clone(),
+            processed_path: stored.processed_path.clone(),
+            mime: stored.mime.clone(),
+            width: stored.width,
+            height: stored.height,
+            bytes: stored.bytes,
+            sha256: stored.sha256.clone(),
+            created_at: ids::now_ms(),
+        };
+        state.db.insert_attachment(att).await.unwrap();
+        stored.id
+    }
+
+    #[tokio::test]
+    async fn vision_gap_upgrades_to_a_capable_model() {
+        // §7.6: images force a vision-capable model — scout and titan both
+        // lack vision here, so the turn upgrades to the registry's vision
+        // model (on another endpoint) with a hard-rule decision.
+        let local = FakeProvider::scripted(main_stream("should not run", 1));
+        let remote = FakeProvider::scripted(main_stream("vision answer", 7));
+        let remote_received = remote.received.clone();
+
+        let (_dir, state) = app_with_settings(
+            local,
+            &[
+                (keys::TRIAD_ROLE_SCOUT, "scout"),
+                (keys::TRIAD_ROLE_TITAN, "titan"),
+            ],
+        );
+        state
+            .providers
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert("ep_remote".to_string(), Arc::new(remote));
+        *state.model_registry.write().unwrap_or_else(|p| p.into_inner()) = vec![
+            reg_model("scout", DEFAULT_ENDPOINT, &["completion"]),
+            reg_model("titan", DEFAULT_ENDPOINT, &["completion"]),
+            // Profile models are stored as qualified refs (�5.1).
+            reg_model("vl@ep_remote", "ep_remote", &["completion", "vision"]),
+        ];
+
+        create_conv(&state).await;
+        let att_id = seed_attachment(&state).await;
+        let mut send_args = args("what is this?");
+        send_args.attachment_ids = vec![att_id];
+        chat_send_inner(&state, send_args).await.unwrap();
+
+        // The remote endpoint's vision model answered; local never ran.
+        let reqs = remote_received.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].model, "vl");
+        assert_eq!(reqs[0].endpoint_id, "ep_remote");
+        let msgs = messages(&state).await;
+        assert_eq!(msgs[1].model_id.as_deref(), Some("vl@ep_remote"));
+        assert_eq!(msgs[1].endpoint_id.as_deref(), Some("ep_remote"));
+        // Titan was the policy pick (scout lacks vision); the upgrade kept
+        // the target and explained itself.
+        assert_eq!(msgs[1].model_role, Some(ModelRole::Titan));
+        let events = state.db.list_routing_events("c1".into(), 10).await.unwrap();
+        assert_eq!(events[0].decision.source, DecisionSource::HardRule);
+        assert!(events[0].decision.reason.contains("lacks vision"), "{:?}", events[0].decision.reason);
+        assert!(events[0].decision.flags.vision);
+        assert_eq!(events[0].decision.vision_gap, None);
+    }
+
+    #[tokio::test]
+    async fn vision_gap_pin_suggests_instead_of_overriding() {
+        // §7.6: a pin is user intent — the non-vision model keeps the turn
+        // and the decision carries a one-click suggestion.
+        let local = FakeProvider::scripted(main_stream("text-only answer", 5));
+
+        let (_dir, state) = app_with_settings(
+            local,
+            &[(keys::TRIAD_ROLE_TITAN, "titan")],
+        );
+        *state.model_registry.write().unwrap_or_else(|p| p.into_inner()) = vec![
+            reg_model("pinned-model", DEFAULT_ENDPOINT, &["completion"]),
+            reg_model("titan", DEFAULT_ENDPOINT, &["completion", "vision"]),
+        ];
+
+        create_conv(&state).await;
+        state
+            .db
+            .set_conversation_model("c1".into(), Some("pinned-model".into()))
+            .await
+            .unwrap();
+        let att_id = seed_attachment(&state).await;
+        let mut send_args = args("what is this?");
+        send_args.attachment_ids = vec![att_id];
+        chat_send_inner(&state, send_args).await.unwrap();
+
+        let msgs = messages(&state).await;
+        assert_eq!(msgs[1].model_id.as_deref(), Some("pinned-model"));
+        let events = state.db.list_routing_events("c1".into(), 10).await.unwrap();
+        assert_eq!(events[0].decision.source, DecisionSource::Manual);
+        assert_eq!(
+            events[0].decision.vision_gap.as_deref(),
+            Some("titan"),
+            "the vision-capable role model is the suggestion"
+        );
+    }
+
+    #[tokio::test]
+    async fn vision_gap_without_alternative_warns_bare() {
+        let local = FakeProvider::scripted(main_stream("text-only", 3));
+        let (_dir, state) = app_with_settings(
+            local,
+            &[(keys::TRIAD_ROLE_TITAN, "titan")],
+        );
+        *state.model_registry.write().unwrap_or_else(|p| p.into_inner()) = vec![
+            reg_model("pinned-model", DEFAULT_ENDPOINT, &["completion"]),
+            reg_model("titan", DEFAULT_ENDPOINT, &["completion"]),
+        ];
+
+        create_conv(&state).await;
+        state
+            .db
+            .set_conversation_model("c1".into(), Some("pinned-model".into()))
+            .await
+            .unwrap();
+        let att_id = seed_attachment(&state).await;
+        let mut send_args = args("look");
+        send_args.attachment_ids = vec![att_id];
+        chat_send_inner(&state, send_args).await.unwrap();
+
+        let events = state.db.list_routing_events("c1".into(), 10).await.unwrap();
+        assert_eq!(
+            events[0].decision.vision_gap.as_deref(),
+            Some(""),
+            "gap flagged with no known alternative"
+        );
     }
 
     #[tokio::test]

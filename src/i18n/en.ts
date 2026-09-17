@@ -26,6 +26,10 @@ export const en = {
   "chat.attach.remove": "Remove",
   "chat.attach.failed": "Couldn't add that image.",
 
+  // Vision routing (M3.7)
+  "chat.vision.gap": "This model can't see images.",
+  "chat.vision.fix": "Switch to the vision model",
+
   // Tool runtime (M2)
   "chat.tools.activity": "Tool activity",
   "chat.tools.running": "running…",
