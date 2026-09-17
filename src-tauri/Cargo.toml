@@ -18,6 +18,10 @@ tauri-plugin-opener = "2.5"
 tauri-plugin-single-instance = "2.4"
 tauri-plugin-global-shortcut = "2"
 
+# In-app updates (§14 M4): artifacts signed with tauri signer; updates are
+# pulled from the project's GitHub Releases (no Ternion-operated server).
+tauri-plugin-updater = "2"
+
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

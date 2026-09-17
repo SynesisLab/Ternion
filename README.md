@@ -134,8 +134,34 @@ attachment files under `attachments\` beside it; logs at
 npm run tauri build
 ```
 
-Produces an NSIS installer under `src-tauri/target/release/bundle/nsis/`
-(unsigned until M4 — SmartScreen will warn; that's expected).
+Produces an NSIS installer (per-user install, English/繁體中文) under
+`src-tauri/target/release/bundle/nsis/` (unsigned — SmartScreen will warn;
+code signing is a release-step decision, see below).
+
+## Packaging & updates (§14 M4)
+
+The updater is armed but dormant until a release pipeline exists: updates
+are pulled from `SynesisLab/Ternion` GitHub Releases (`latest.json` next to
+the installer assets), verified with a minisign key, and installed
+passively on Windows. To arm it for a real release:
+
+1. Generate the signing keypair (keep the private key off-repo, e.g. in a
+   password manager / CI secret):
+   ```sh
+   npm run tauri signer generate -w ./ternion.key
+   ```
+2. Put the generated public key into `plugins.updater.pubkey` in
+   `src-tauri/tauri.conf.json` (replacing the placeholder).
+3. Build with the private key available as an environment variable
+   (`.env` files do not work for this):
+   ```sh
+   TAURI_SIGNING_PRIVATE_KEY=$(cat ternion.key) npm run tauri build
+   ```
+   This produces the signed `.nsis.zip` updater artifact next to the
+   installer.
+4. Publish: attach installer + signed updater artifact + a `latest.json`
+   manifest to a GitHub Release (the manifest is written automatically
+   when `createUpdaterArtifacts` is on, with `-should-sign` metadata).
 
 ## Tests
 

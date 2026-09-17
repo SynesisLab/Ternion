@@ -41,6 +41,10 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_opener::init())
+        // §14 M4: in-app updates. The check/install flow ships behind the
+        // frontend wiring in a later step; the plugin + signing config arm
+        // the release pipeline now.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             commands::ping,
             commands::open_external,
