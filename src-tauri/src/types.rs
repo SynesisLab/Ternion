@@ -307,7 +307,9 @@ pub struct Message {
     pub tool_calls: Vec<ToolCallRow>,
 }
 
-/// Discovery record for the model picker (from Ollama /api/tags).
+/// Discovery record for the model picker (from Ollama /api/tags or an
+/// OpenAI-compatible /v1/models). `id` is the model *reference* (§5.1): bare
+/// for the built-in local Ollama, `"model@endpoint"` for profiles.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelInfo {
@@ -320,6 +322,8 @@ pub struct ModelInfo {
     pub context_length: Option<u32>,
     /// e.g. ["completion", "vision", "tools", "thinking"]
     pub capabilities: Vec<String>,
+    /// Which endpoint profile this model lives on.
+    pub endpoint_id: String,
 }
 
 /// User-managed endpoint profile (design §5.1). The built-in local Ollama

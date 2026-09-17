@@ -59,6 +59,7 @@ pub async fn save_endpoint_profile(
     }
     let now = ids::now_ms();
     state.db.upsert_endpoint_profile(profile.clone(), now).await?;
+    state.rebuild_providers().await;
     Ok(profile)
 }
 
@@ -81,6 +82,7 @@ pub async fn delete_endpoint_profile(
                 log::warn!("keyring cleanup failed for {id}: {e}");
             }
         }
+        state.rebuild_providers().await;
     }
     Ok(())
 }
@@ -127,7 +129,10 @@ async fn apply_key_ref(
     state
         .db
         .upsert_endpoint_profile(profile, ids::now_ms())
-        .await
+        .await?;
+    // A key change can flip a provider from 401 to working — refresh.
+    state.rebuild_providers().await;
+    Ok(())
 }
 
 /// Connection test (§5.1): GET /api/tags or GET /v1/models with latency +

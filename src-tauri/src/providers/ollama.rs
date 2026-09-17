@@ -224,6 +224,8 @@ pub(crate) fn parse_tags(value: &serde_json::Value) -> Result<Vec<ModelInfo>, St
             Some(ModelInfo {
                 id: name.clone(),
                 display_name: name,
+                // Filled in by the model registry (bare vs "model@endpoint").
+                endpoint_id: String::new(),
                 size_bytes: m.size,
                 parameter_size: details.parameter_size,
                 quantization_level: details.quantization_level,

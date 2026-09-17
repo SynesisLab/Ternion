@@ -27,7 +27,7 @@ pub async fn set_setting(
     state.db.set_setting(&key, &value).await?;
     state.settings.set(&key, value.clone());
     if key == keys::OLLAMA_BASE_URL {
-        state.rebuild_providers();
+        state.rebuild_providers().await;
     }
     Ok(())
 }

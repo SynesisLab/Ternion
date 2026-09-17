@@ -18,7 +18,8 @@ pub struct ChatSendArgs {
     /// Client-generated id; makes retries idempotent (design §3.2).
     pub user_message_id: String,
     pub content: String,
-    /// Explicit model id in M0 (no "auto" routing until M1).
+    /// Model *reference* (§5.1): bare `"gemma3:4b"` targets the built-in
+    /// local Ollama; `"model@endpoint_id"` targets an endpoint profile.
     pub model: String,
 }
 

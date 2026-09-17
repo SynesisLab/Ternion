@@ -30,7 +30,9 @@ pub struct AppState {
     pub approvals: AsyncMutex<HashMap<String, tokio::sync::oneshot::Sender<ApprovalReply>>>,
     /// §6.6 "allow for session" grants — in-memory, lost on exit.
     pub session_grants: AsyncMutex<permissions::SessionGrants>,
-    providers: RwLock<HashMap<String, Arc<dyn Provider>>>,
+    /// Provider registry keyed by endpoint id. `pub(crate)` so tests can seed
+    /// extra endpoints (chat.rs multi-endpoint tests).
+    pub(crate) providers: RwLock<HashMap<String, Arc<dyn Provider>>>,
 }
 
 /// Cancellation entry for an in-flight stream.
@@ -97,14 +99,16 @@ impl AppState {
             .ok_or_else(|| CmdError::internal(format!("unknown endpoint: {endpoint_id}")))
     }
 
-    /// Rebuild the provider registry from current settings (called when
-    /// `ollama.base_url` changes).
-    pub fn rebuild_providers(&self) {
+    /// Rebuild the provider registry from the endpoint profile table plus the
+    /// built-in local Ollama (called when profiles change or the Ollama base
+    /// URL setting changes).
+    pub async fn rebuild_providers(&self) {
+        let profiles = self.db.list_endpoint_profiles().await.unwrap_or_default();
         let base = self.settings.get_or(
             crate::settings::keys::OLLAMA_BASE_URL,
             "http://127.0.0.1:11434",
         );
-        let map = crate::providers::build_providers(&base, self.http.clone());
+        let map = crate::providers::build_providers(&profiles, &base, self.http.clone());
         *self.providers.write().unwrap_or_else(|p| p.into_inner()) = map;
     }
 }

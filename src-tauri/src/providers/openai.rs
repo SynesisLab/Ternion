@@ -3,10 +3,6 @@
 //! Compiles to the same normalized stream as the Ollama adapter (§5.5) —
 //! the UI never knows which provider produced a token.
 
-// Constructed by `build_providers` once endpoint profiles flow through
-// (M3.3); until then only the tests exercise it.
-#![allow(dead_code)]
-
 use futures::future::BoxFuture;
 use futures::StreamExt;
 use serde_json::Value;
@@ -80,6 +76,8 @@ impl OpenAiAdapter {
             .map(|id| crate::types::ModelInfo {
                 id: id.clone(),
                 display_name: id,
+                // Filled in by the model registry (bare vs "model@endpoint").
+                endpoint_id: String::new(),
                 size_bytes: None,
                 parameter_size: None,
                 quantization_level: None,

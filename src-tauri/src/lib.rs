@@ -114,7 +114,7 @@ pub fn run() {
                 .connect_timeout(Duration::from_secs(5))
                 .build()
                 .map_err(|e| -> Box<dyn std::error::Error> { format!("http client: {e}").into() })?;
-            let providers = providers::build_providers(&base, http.clone());
+            let providers = providers::build_providers(&[], &base, http.clone());
 
             app.manage(AppState::new(database, settings, http, providers));
 

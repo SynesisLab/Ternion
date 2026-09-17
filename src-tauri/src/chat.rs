@@ -81,7 +81,10 @@ async fn stream_once(
     forward: Arc<dyn Fn(&StreamEvent) + Send + Sync>,
 ) -> Result<ChatSendResult, CmdError> {
     let conv_id = args.conversation_id.clone();
-    let endpoint_id = DEFAULT_ENDPOINT.to_string();
+    // Provisional endpoint from the picked model reference (§5.1); routing
+    // corrects it below when a role assigns a different endpoint.
+    let (args_endpoint, _) = crate::providers::parse_model_ref(&args.model);
+    let endpoint_id = args_endpoint.unwrap_or_else(|| DEFAULT_ENDPOINT.to_string());
     let now = ids::now_ms();
 
     // Stale suggestion chips from the previous exchange are void now.
@@ -261,9 +264,12 @@ async fn stream_once(
 
     loop {
         let tools = (!tool_specs.is_empty() && hops < max_hops).then(|| tool_specs.clone());
+        // The provider API wants the bare model name; the reference's
+        // endpoint dimension selects the adapter (§5.1).
+        let (_, bare_model) = crate::providers::parse_model_ref(&routed.model);
         let req = ChatRequest {
-            endpoint_id: endpoint_id.clone(),
-            model: routed.model.clone(),
+            endpoint_id: routed.endpoint_id.clone(),
+            model: bare_model,
             messages: std::mem::take(&mut messages),
             tools,
             params: ChatParams {
@@ -282,7 +288,7 @@ async fn stream_once(
 
         // Spawn the provider stream for this hop.
         let (tx, mut rx) = mpsc::channel::<StreamEvent>(64);
-        let provider: Arc<dyn Provider> = state.provider_for(DEFAULT_ENDPOINT)?;
+        let provider: Arc<dyn Provider> = state.provider_for(&routed.endpoint_id)?;
         let cancel_for_task = cancel.clone();
         tokio::spawn(async move {
             provider.chat(req, tx, cancel_for_task).await;
@@ -934,11 +940,13 @@ fn apply_edited_content(
     }
 }
 
-/// One turn's routing outcome: the resolved model + Triad role, the policy
+/// One turn's routing outcome: the resolved model reference + its endpoint
+/// (§5.1: roles bind to `(endpoint, model)` pairs), the Triad role, the policy
 /// decision (persisted to `routing_events` and forwarded to the UI), and the
 /// keep-alive policy that follows the role.
 struct RoutedTurn {
     model: String,
+    endpoint_id: String,
     role: Option<ModelRole>,
     decision: RoutingDecision,
     keep_alive: String,
@@ -973,6 +981,8 @@ async fn route_turn(
         .settings
         .get_or(crate::settings::keys::CHAT_KEEP_ALIVE, "10m");
     let model: String;
+    // Resolved from the routed reference below (§5.1).
+    let endpoint_id: String;
 
     let triad_off = !cfg.enabled || cfg.skip_router || !cfg.routing_available();
     match pin {
@@ -1030,8 +1040,15 @@ async fn route_turn(
                 apply_capability_facts(state, &cfg, &mut ctx);
 
                 let herald_decision = match cfg.roles.herald.as_deref() {
-                    Some(herald_model) => {
-                        let provider = state.provider_for(DEFAULT_ENDPOINT)?;
+                    Some(herald_ref) => {
+                        // Herald may live on any endpoint (§5.1) — its
+                        // reference carries the endpoint dimension too.
+                        let (herald_endpoint, herald_model) =
+                            crate::providers::parse_model_ref(herald_ref);
+                        let provider = state
+                            .provider_for(
+                                herald_endpoint.as_deref().unwrap_or(DEFAULT_ENDPOINT),
+                            )?;
                         // Tail = completed rows before the just-added user
                         // message (which is passed separately as
                         // latest_message) — skip it and any streaming stubs.
@@ -1050,7 +1067,7 @@ async fn route_turn(
                         };
                         match herald::classify(
                             provider.as_ref(),
-                            herald_model,
+                            &herald_model,
                             &input,
                             cfg.herald_timeout_ms,
                             &cfg.herald_keep_alive,
@@ -1083,6 +1100,11 @@ async fn route_turn(
         }
     }
 
+    // §5.1: the reference's endpoint dimension selects the adapter — bare
+    // refs (and bare role settings, pre-M3) ride the built-in local Ollama.
+    let (parsed_endpoint, _) = crate::providers::parse_model_ref(&model);
+    endpoint_id = parsed_endpoint.unwrap_or_else(|| DEFAULT_ENDPOINT.to_string());
+
     // Persist (§3.11) and attach the outcome to the assistant row.
     let event_id = ids::new_id();
     let latency_ms =
@@ -1106,7 +1128,7 @@ async fn route_turn(
             message_id.to_string(),
             role,
             model.clone(),
-            DEFAULT_ENDPOINT.to_string(),
+            endpoint_id.clone(),
             Some(event_id.clone()),
         )
         .await?;
@@ -1118,6 +1140,7 @@ async fn route_turn(
 
     Ok(RoutedTurn {
         model,
+        endpoint_id,
         role,
         decision,
         keep_alive,
@@ -1691,6 +1714,105 @@ mod tests {
         assert_eq!(events[0].decision.source, DecisionSource::Manual);
         assert_eq!(events[0].override_kind.as_deref(), Some("manual"));
         assert_eq!(events[0].actual_model, "titan-model");
+    }
+
+    #[tokio::test]
+    async fn qualified_model_ref_routes_to_that_endpoint() {
+        // §5.1: "model@endpoint_id" selects the endpoint profile's adapter;
+        // the provider sees the bare model, the DB row keeps the full ref.
+        let local = FakeProvider::scripted(main_stream("should not run", 1));
+        let remote = FakeProvider::scripted(main_stream("remote answer", 7));
+        let local_received = local.received.clone();
+        let remote_received = remote.received.clone();
+
+        let (_dir, state) = app_with_settings(
+            local,
+            &[
+                (keys::TRIAD_ROLE_SCOUT, "scout-model"),
+                (keys::TRIAD_ROLE_TITAN, "titan-model"),
+            ],
+        );
+        state
+            .providers
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert("ep_remote".to_string(), Arc::new(remote));
+
+        create_conv(&state).await;
+        // A pinned model reference pointing at the remote profile.
+        state
+            .db
+            .set_conversation_model("c1".into(), Some("titan@ep_remote".into()))
+            .await
+            .unwrap();
+
+        let mut args = args("hello");
+        args.model = "fallback@ep_local_ollama".into();
+        chat_send_inner(&state, args).await.unwrap();
+
+        let local_reqs = local_received.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        assert!(local_reqs.is_empty(), "no request may land on the built-in");
+        let remote_reqs = remote_received
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        assert_eq!(remote_reqs.len(), 1, "the pinned endpoint serves the turn");
+        assert_eq!(remote_reqs[0].model, "titan", "provider sees the bare model");
+        assert_eq!(remote_reqs[0].endpoint_id, "ep_remote");
+
+        let msgs = messages(&state).await;
+        assert_eq!(msgs[1].model_id.as_deref(), Some("titan@ep_remote"));
+        assert_eq!(msgs[1].endpoint_id.as_deref(), Some("ep_remote"));
+        // Not a configured role model → an ordinary manual pin.
+        assert_eq!(msgs[1].model_role, None);
+
+        let events = state.db.list_routing_events("c1".into(), 10).await.unwrap();
+        assert_eq!(events[0].actual_model, "titan@ep_remote");
+    }
+
+    #[tokio::test]
+    async fn triad_role_settings_carry_endpoint_refs() {
+        // §5.1: a role may point at another endpoint — "Titan lives remote".
+        let local = FakeProvider::scripted(main_stream("should not run", 1));
+        let remote = FakeProvider::scripted(main_stream("remote answer", 7));
+        let local_received = local.received.clone();
+        let remote_received = remote.received.clone();
+
+        let (_dir, state) = app_with_settings(
+            local,
+            &[(keys::TRIAD_ROLE_TITAN, "titan@ep_remote")],
+        );
+        state
+            .providers
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert("ep_remote".to_string(), Arc::new(remote));
+
+        create_conv(&state).await;
+        state
+            .db
+            .set_conversation_model("c1".into(), Some("titan".into()))
+            .await
+            .unwrap();
+
+        let mut args = args("hello");
+        args.model = "fallback-model".into();
+        chat_send_inner(&state, args).await.unwrap();
+
+        let local_reqs = local_received.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        assert!(local_reqs.is_empty());
+        let remote_reqs = remote_received
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        assert_eq!(remote_reqs.len(), 1);
+        assert_eq!(remote_reqs[0].model, "titan");
+        assert_eq!(remote_reqs[0].endpoint_id, "ep_remote");
+        // Role pins keep their role even across endpoints.
+        let msgs = messages(&state).await;
+        assert_eq!(msgs[1].model_id.as_deref(), Some("titan@ep_remote"));
+        assert_eq!(msgs[1].endpoint_id.as_deref(), Some("ep_remote"));
+        assert_eq!(msgs[1].model_role, Some(ModelRole::Titan));
     }
 
     #[tokio::test]

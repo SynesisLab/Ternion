@@ -130,8 +130,11 @@ export interface RoutingEvent {
 }
 
 export interface ModelInfo {
+  /** Model reference (§5.1): bare for the built-in, "model@endpoint" for profiles. */
   id: string;
   displayName: string;
+  /** Owning endpoint profile id ("ep_local_ollama" for bare ids). */
+  endpointId: string;
   sizeBytes: number | null;
   parameterSize: string | null;
   quantizationLevel: string | null;
